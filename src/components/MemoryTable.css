@@ -1,0 +1,56 @@
+.memory-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+}
+
+.memory-table th,
+.memory-table td {
+  padding: 2px 6px;
+  text-align: left;
+}
+
+.memory-table thead {
+  position: sticky;
+  top: 0;
+  background: var(--code-bg, #f4f3ec);
+}
+
+.mem-value {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mem-value input {
+  width: 100%;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 1px 4px;
+}
+
+/* Same mark-color / base-toggle scheme as RegisterTable.css — duplicated
+ * rather than shared for now, since these two components were built as
+ * independent deliverables; worth factoring into one shared stylesheet
+ * (e.g. mark-colors.css) once both are wired into the real app. */
+.base-toggle {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.base-toggle button {
+  font-size: 10px;
+  padding: 1px 4px;
+  cursor: pointer;
+}
+
+.base-toggle button.active {
+  font-weight: bold;
+  background: var(--accent-bg, #eee);
+}
+
+.memory-row.mark-default { background: transparent; }
+.memory-row.mark-success { background: rgba(76, 175, 80, 0.15); }
+.memory-row.mark-warning { background: rgba(255, 193, 7, 0.2); }
+.memory-row.mark-danger  { background: rgba(244, 67, 54, 0.2); }

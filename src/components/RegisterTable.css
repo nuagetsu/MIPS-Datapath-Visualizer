@@ -1,0 +1,60 @@
+.register-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+}
+
+.register-table th,
+.register-table td {
+  padding: 2px 6px;
+  text-align: left;
+}
+
+.register-table thead {
+  position: sticky;
+  top: 0;
+  background: var(--code-bg, #f4f3ec);
+}
+
+.reg-name sup {
+  opacity: 0.6;
+  margin-right: 2px;
+}
+
+.reg-value {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.reg-value input {
+  width: 100%;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 1px 4px;
+}
+
+.base-toggle {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.base-toggle button {
+  font-size: 10px;
+  padding: 1px 4px;
+  cursor: pointer;
+}
+
+.base-toggle button.active {
+  font-weight: bold;
+  background: var(--accent-bg, #eee);
+}
+
+/* Mark colors — the four visual states RR()/WR()/RES()/trySave() cycle
+ * through, replacing Bootstrap's table-success/warning/danger classes from
+ * the original so this doesn't depend on Bootstrap being present. */
+.register-row.mark-default { background: transparent; }
+.register-row.mark-success { background: rgba(76, 175, 80, 0.15); }  /* read this cycle */
+.register-row.mark-warning { background: rgba(255, 193, 7, 0.2); }   /* written this cycle */
+.register-row.mark-danger  { background: rgba(244, 67, 54, 0.2); }   /* readonly write attempt or invalid input */

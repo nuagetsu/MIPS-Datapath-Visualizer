@@ -1,0 +1,11 @@
+{
+  "tspegjs": {
+    "customHeader": "import type { DataDecl, NumNode, TextLine } from \"./ast\";"
+  },
+  "returnTypes": {
+    "Datas": "DataDecl[]",
+    "Val32": "NumNode[]",
+    "Val8": "NumNode[]",
+    "Texts": "TextLine[]"
+  }
+}

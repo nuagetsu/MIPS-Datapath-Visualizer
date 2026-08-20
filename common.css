@@ -1,0 +1,30 @@
+.consolas { font-family: Consolas,monaco,monospace; }
+table.unpad td { padding: 0px; border-spacing: 0; border-collapse: collapse; }
+table.unpad th { padding: 0px; border-spacing: 0; border-collapse: collapse; }
+.sticky { position: sticky; }
+.pot { top: 0; z-index: 20; }
+.table-wrap { height: 100%; overflow-y: scroll; }
+.top { height: calc(65vh - 45px); }
+.bot { height: calc(35vh - 45px); }
+.tophalf { height: calc(40vh - 22.5px); }
+.bothalf { height: calc(60vh - 67.5px); }
+.center { height: 30px; text-align: center; justify-content: center; border-top: 1px solid #000; }
+.full { height: calc(100vh - 90px); }
+.editor{ position: relative; top: 0; right: 0; bottom: 0; left: 0; overflow: hidden; height: calc(65vh - 90px); width: 100%; }
+.topeditor{ position: relative; top: 0; right: 0; bottom: 0; left: 0; overflow: hidden; height: calc(40vh - 67.5px); width: 100%; }
+.console{ position: relative; top: 0; right: 0; bottom: 0; left: 0; overflow: hidden; height: calc(35vh - 45px); width: 100%; }
+.consinput{ position: relative; top: 0; right: 0; bottom: 0; left: 0; overflow: hidden; height: calc(35vh - 85px); width: 100%; }
+.keyin { height:35px; }
+.botconsole{ position: relative; top: 0; right: 0; bottom: 0; left: 0; overflow: hidden; height: calc(60vh - 67.5px); width: 100%; }
+.noselection .ace_marker-layer .ace_selection { background: transparent; }
+.noselection .ace_cursor { color: transparent; }
+* { scrollbar-width: thin; }
+*::-webkit-scrollbar { width: 12px; }
+*::-webkit-scrollbar-thumb { border-radius: 20px; }
+.RD { background-color: #AAA; }
+.ER { background-color: #FF967A; }
+.WR { position:absolute; background:#EEE; z-index:20 }
+.ace_gutter-cell.ace_breakpoint{ border-radius: 20px 0px 0px 20px;  box-shadow: 0px 0px 1px 1px red inset; }
+.smol { font-size: 10pt; }
+.smol > .form-control:not(textarea) { font-size: 10pt; }
+#proc { overflow: auto; height:100%; width:100%; }

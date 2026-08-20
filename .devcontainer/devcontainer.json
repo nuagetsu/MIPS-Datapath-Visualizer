@@ -1,0 +1,15 @@
+{
+  "name": "React Development",
+
+  "dockerComposeFile": [
+    "../docker-compose.yml"
+  ],
+
+  "service": "react-app",
+
+  "workspaceFolder": "/app",
+
+  "shutdownAction": "stopCompose",
+
+  "postCreateCommand": "npm install"
+}

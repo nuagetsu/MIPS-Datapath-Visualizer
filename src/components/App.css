@@ -1,0 +1,125 @@
+/* Same "reactive/scales with window size" approach discussed earlier:
+ * ordinary CSS Grid/Flexbox for the page chrome, and the datapath diagram
+ * (an <svg viewBox>, see DatapathDiagram.css) drops into it as a single
+ * grid item that scales itself. Nothing here computes pixel positions in
+ * JS. */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  font-family: system-ui, sans-serif;
+}
+
+.app-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #ddd;
+  flex-wrap: wrap;
+}
+
+.app-toolbar h1 {
+  font-size: 16px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.app-toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.app-speed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.app-stage-indicator {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  color: #555;
+}
+
+/* Three-column layout: editors | diagram | tables. Each column is its own
+ * scroll region so a tall register/memory table doesn't push the diagram
+ * off-screen. */
+.app-main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(360px, 2fr) minmax(260px, 1fr);
+  gap: 12px;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.app-editors,
+.app-tables {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.app-diagram {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* The diagram itself owns its aspect ratio (see DatapathDiagram.css) —
+ * this just keeps it from being force-stretched by the grid cell. */
+.app-diagram > * {
+  width: 100%;
+  max-width: 900px;
+}
+
+.app-editor-panel {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.app-editor-label {
+  font-size: 11px;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 4px 8px;
+  background: #f4f3ec;
+  border-bottom: 1px solid #ddd;
+}
+
+.app-editor-container {
+  height: 140px;
+}
+
+.app-editor-panel-console .app-editor-container {
+  height: 100px;
+}
+
+/* Narrow viewports: stack everything in one column instead of squeezing
+ * three panels — the diagram still scales itself via its own aspect-ratio,
+ * it's just no longer competing for horizontal space with the tables. */
+@media (max-width: 900px) {
+  .app-main {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+  .app-editors,
+  .app-tables {
+    overflow-y: visible;
+  }
+}

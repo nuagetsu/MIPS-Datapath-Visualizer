@@ -1,0 +1,61 @@
+.vals-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+}
+
+.vals-table th,
+.vals-table td {
+  padding: 2px 6px;
+  text-align: left;
+}
+
+.vals-table thead {
+  position: sticky;
+  top: 0;
+  background: var(--code-bg, #f4f3ec);
+}
+
+.val-name sup {
+  opacity: 0.6;
+  margin-right: 2px;
+}
+
+.val-value {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.val-value input {
+  width: 100%;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 1px 4px;
+  /* Always readonly */
+  opacity: 0.85;
+}
+
+.base-toggle {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.base-toggle button {
+  font-size: 10px;
+  padding: 1px 4px;
+  cursor: pointer;
+}
+
+.base-toggle button.active {
+  font-weight: bold;
+  background: var(--accent-bg, #eee);
+}
+
+/* Mark colors — matches RegisterTable.css's four states exactly, no
+ * Bootstrap dependency. */
+.vals-row.mark-default { background: transparent; }
+.vals-row.mark-success { background: rgba(76, 175, 80, 0.15); }  /* read this cycle */
+.vals-row.mark-warning { background: rgba(255, 193, 7, 0.2); }   /* written this cycle */
+.vals-row.mark-danger  { background: rgba(244, 67, 54, 0.2); }   /* unused currently — no write in vals$ can fail */

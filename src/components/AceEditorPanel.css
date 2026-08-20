@@ -1,0 +1,41 @@
+.ace-editor-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.ace-editor-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 4px;
+}
+
+.ace-editor-container {
+  flex: 1;
+  min-height: 0;
+}
+
+/*
+ * Gutter decoration for mark(line) — the "currently executing" line.
+ * Ace applies this as a class on the .ace_gutter-cell for that row.
+ * Adjust the color/marker to match your app's existing visual language;
+ * this reproduces a simple colored dot in the gutter.
+ */
+.ace_gutter-cell.RD::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d32f2f;
+  margin-right: 4px;
+}
+
+/*
+ * Full-line marker for next(line) — the "next line to execute" highlight.
+ * Ace applies this as a class within the marker layer, spanning the line.
+ */
+.ace_marker-layer .WR {
+  position: absolute;
+  background: rgba(255, 235, 59, 0.35);
+}

@@ -1,0 +1,57 @@
+.control-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
+
+.control-table th,
+.control-table td {
+  padding: 2px 4px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.control-table thead {
+  position: sticky;
+  top: 0;
+  background: var(--code-bg, #f4f3ec);
+}
+
+.ctrl-corner,
+.ctrl-name {
+  text-align: left;
+  position: sticky;
+  left: 0;
+  background: var(--code-bg, #f4f3ec);
+}
+
+.ctrl-cell input {
+  width: 2.5em;
+  text-align: center;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 1px 2px;
+}
+
+/* Mark colors — same four states as the other tables, applied per-cell and
+ * per-header-column (RD(name, op) highlights one cell AND its op's header
+ * column, matching the original's _head[op] behavior), PLUS the row label
+ * itself (see ControlTable.tsx's ControlRow — derived from whether any
+ * cell in the row is currently marked, restoring the original's row-level
+ * highlight on top of this port's more precise per-cell one). Only
+ * "default"/"success" are reachable on .ctrl-name specifically, since
+ * ctrl.ts's cells can no longer be edited (no "warning"/"danger" path).
+ * Written as combined-class selectors (.ctrl-name.mark-success) so they
+ * correctly override .ctrl-name's own unconditional background above —
+ * matching selector specificity, not source order. */
+.ctrl-head.mark-default,
+.ctrl-cell.mark-default { background: transparent; }
+.ctrl-name.mark-default { background: var(--code-bg, #f4f3ec); }
+.ctrl-head.mark-success,
+.ctrl-cell.mark-success,
+.ctrl-name.mark-success { background: rgba(76, 175, 80, 0.15); }
+.ctrl-head.mark-warning,
+.ctrl-cell.mark-warning { background: rgba(255, 193, 7, 0.2); }
+.ctrl-head.mark-danger,
+.ctrl-cell.mark-danger  { background: rgba(244, 67, 54, 0.2); }

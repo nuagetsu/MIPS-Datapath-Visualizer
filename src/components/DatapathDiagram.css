@@ -1,0 +1,70 @@
+/* The actual "reactive/scales with window size" mechanism: the SVG's
+ * internal geometry is fixed (viewBox="0 0 900 580", matching every
+ * coordinate ported from processor.js), and everything below just tells
+ * the *element* how big to be on the page. The browser handles scaling
+ * every path/rect/text inside proportionally — no JS involved. */
+.datapath-diagram {
+  width: 100%;
+  height: auto;
+  /* Reserves the right shape in the layout before the SVG has painted,
+   * so surrounding flex/grid content doesn't jump once it loads. */
+  aspect-ratio: 900 / 580;
+  /* Default is xMidYMid meet — scales uniformly and letterboxes rather
+   * than stretching, which would skew the diagram's right angles. Stated
+   * explicitly here as a reminder not to switch this to "none". */
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+/* ---- Components ---- */
+.dp-box {
+  stroke: black;
+  stroke-width: 1;
+}
+.dp-box-thin {
+  stroke: black;
+  stroke-width: 1;
+}
+
+/* Text labels are rendered by KonvaLabel with fontSize/fontWeight/
+ * fontStyle/fill set directly as SVG presentation attributes per label
+ * (mirroring each Konva.Text's own per-instance styling exactly) rather
+ * than CSS classes — there's no fixed small set of "kinds" of label the
+ * way there was for wires (default/active); each one's styling comes
+ * straight from its TextSpec. */
+
+.dp-value {
+  font-size: 10px;
+  font-weight: bold;
+  fill: #1a7a3c;
+}
+.dp-error {
+  font-size: 12px;
+  font-weight: bold;
+  fill: #c0392b;
+}
+
+.dp-ctrl-line {
+  stroke: #2c5aa0;
+  stroke-width: 1;
+}
+
+/* ---- Wires ---- */
+.dp-wire {
+  fill: none;
+  stroke: black;
+  stroke-width: 2;
+  transition: stroke 0.1s ease;
+}
+.dp-wire-active {
+  stroke: #d0342c;
+  stroke-width: 2.5;
+}
+.dp-arrowhead {
+  fill: black;
+}
+.dp-arrowhead-active {
+  fill: #d0342c;
+}
+.dp-arrowhead-blue {
+  fill: #2c5aa0;
+}
