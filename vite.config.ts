@@ -11,5 +11,6 @@ export default defineConfig({
     host: true, // Needed for the Docker Express server port mapping
     strictPort: true,
     port: 5173, 
-  }
+  },
+  base: 'MIPS-Datapath-Visualizer/'
 })
