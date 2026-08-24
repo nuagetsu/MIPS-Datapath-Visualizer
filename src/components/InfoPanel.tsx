@@ -11,8 +11,7 @@ interface InstructionGroup {
   rows: InstructionRow[];
 }
 
-// Content ported 1:1 from processor.html's `.info` modal table, split into
-// labeled groups.
+// Content ported 1:1 from processor.html's `.info` panel table.
 const INSTRUCTION_GROUPS: InstructionGroup[] = [
   {
     heading: "Arithmetic (R-type)",
