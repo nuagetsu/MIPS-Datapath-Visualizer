@@ -1,4 +1,5 @@
-import React, { useRef } from "react";
+import { InfoPanel } from "./InfoPanel";
+import React, { useRef, useState } from "react";
 import { useAceEditor } from "../hooks/useAceEditor";
 import "./AceEditorPanel.css";
  
@@ -10,6 +11,8 @@ interface AceEditorPanelProps {
 }
  
 export function AceEditorPanel({ onReady }: AceEditorPanelProps) {
+  const [infoOpen, setInfoOpen] = useState(false);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
  
@@ -38,9 +41,14 @@ export function AceEditorPanel({ onReady }: AceEditorPanelProps) {
           onChange={(evt) => editor?.read(evt)}
         />
         <button onClick={() => editor && editor.save("program.asm")()}>Download</button>
+        <button
+          onClick={() => setInfoOpen(true)}
+          aria-label="Instruction reference"
+          title="Instruction reference"
+        >ⓘ
+        </button>
       </div>
- 
-
+      <InfoPanel isOpen={infoOpen} onClose={() => setInfoOpen(false)} />
     </div>
   );
 }
