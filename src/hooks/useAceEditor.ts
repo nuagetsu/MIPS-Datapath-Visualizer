@@ -33,7 +33,8 @@
  *     of being fetched at runtime.
  */
 import { useEffect, useRef, useState } from "react";
-import ace, { Ace } from "ace-builds";
+import ace from "../lib/ace-core";
+import type { Ace } from "ace-builds";
 import "ace-builds/src-noconflict/mode-mips";
 import "ace-builds/src-noconflict/theme-chrome";
 import "../types/ace-augment.d.ts";
