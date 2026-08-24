@@ -184,12 +184,6 @@ function print_asm(ast: AssembledLine[]): string {
 
 // ---- Type checker -------------------------------------------------------
 
-interface CheckState {
-  data: DataDecl[] | null;
-  lbl: Record<string, number>;
-  loc: Record<string, number>;
-}
-
 function check$dst_zero(ast: TextLine[]): void {
   for (const line of ast) {
     const inst = line.prop.inst;
@@ -201,6 +195,7 @@ function check$dst_zero(ast: TextLine[]): void {
       case "S":
         if (inst.prop.dst.prop.num === 0) throw mips$InvalidReg(inst, line.prop.loc);
       // eslint-disable-next-line no-fallthrough -- intentional, mirrors original
+      // falls through
       case "M":
         if (inst.prop.op !== "lw" && inst.prop.op !== "lb") break;
         if (inst.prop.dst.prop.num === 0) throw mips$InvalidReg(inst, line.prop.loc);
@@ -428,7 +423,7 @@ function I32(num: number, len: number): NumNode {
  * layoutData() above is ready to provide the resolved address once this
  * expansion pass exists — la's translate case is where it'd be used.
  */
-export function assemble(ast: TextLine[], data: DataDecl[] | null, hex?: string): AssembledLine[] {
+export function assemble(ast: TextLine[], _data: DataDecl[] | null, hex?: string): AssembledLine[] {
   const base = int32.toNum(int32.and(int32.hex(hex ?? "00000000"), int32.hex("03FFFFFF")));
   const addressed = assemble$pc(ast);
   const resolved = assemble$label(addressed, base);

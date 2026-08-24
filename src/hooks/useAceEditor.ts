@@ -32,7 +32,7 @@
  *     ace-modules.d.ts), so it's imported as a real ES module below instead
  *     of being fetched at runtime.
  */
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import ace, { Ace } from "ace-builds";
 import "ace-builds/src-noconflict/mode-mips";
 import "ace-builds/src-noconflict/theme-chrome";
