@@ -188,17 +188,16 @@ function check$dst_zero(ast: TextLine[]): void {
   for (const line of ast) {
     const inst = line.prop.inst;
     if (inst === null) continue;
-    switch (inst.prop.type) {
-      case "R":
-      case "I":
-      case "L":
-      case "S":
-        if (inst.prop.dst.prop.num === 0) throw mips$InvalidReg(inst, line.prop.loc);
-      // eslint-disable-next-line no-fallthrough -- intentional, mirrors original
-      // falls through
-      case "M":
-        if (inst.prop.op !== "lw" && inst.prop.op !== "lb") break;
-        if (inst.prop.dst.prop.num === 0) throw mips$InvalidReg(inst, line.prop.loc);
+    const type = inst.prop.type;
+    const needsDstCheck =
+      type === "R" ||
+      type === "I" ||
+      type === "L" ||
+      type === "S" ||
+      (type === "M" && (inst.prop.op === "lw" || inst.prop.op === "lb"));
+
+    if (needsDstCheck && inst.prop.dst.prop.num === 0) {
+      throw mips$InvalidReg(inst, line.prop.loc);
     }
   }
 }
