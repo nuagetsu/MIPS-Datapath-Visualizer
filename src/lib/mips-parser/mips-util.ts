@@ -188,16 +188,35 @@ function check$dst_zero(ast: TextLine[]): void {
   for (const line of ast) {
     const inst = line.prop.inst;
     if (inst === null) continue;
-    const type = inst.prop.type;
-    const needsDstCheck =
-      type === "R" ||
-      type === "I" ||
-      type === "L" ||
-      type === "S" ||
-      (type === "M" && (inst.prop.op === "lw" || inst.prop.op === "lb"));
+    switch (inst.prop.type) {
+      case "R":
+      case "I":
+      case "L":
+      case "S":
+        if (inst.prop.dst.prop.num === 0) throw mips$InvalidReg(inst, line.prop.loc);
+      // eslint-disable-next-line no-fallthrough -- intentional, mirrors original
+      // falls through
+      case "M":
+        if (inst.prop.op !== "lw" && inst.prop.op !== "lb") break;
+        if (inst.prop.dst.prop.num === 0) throw mips$InvalidReg(inst, line.prop.loc);
+    }
+  }
+}
 
-    if (needsDstCheck && inst.prop.dst.prop.num === 0) {
-      throw mips$InvalidReg(inst, line.prop.loc);
+function check$dst_zero(ast: TextLine[]): void {
+  for (const line of ast) {
+    const inst = line.prop.inst;
+    if (inst === null) continue;
+
+    if (
+      inst.prop.type === "R" ||
+      inst.prop.type === "I" ||
+      inst.prop.type === "L" ||
+      inst.prop.type === "S"
+    ) {
+      if (inst.prop.dst.prop.num === 0) throw mips$InvalidReg(inst, line.prop.loc);
+    } else if (inst.prop.type === "M" && (inst.prop.op === "lw" || inst.prop.op === "lb")) {
+      if (inst.prop.dst.prop.num === 0) throw mips$InvalidReg(inst, line.prop.loc);
     }
   }
 }
