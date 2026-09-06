@@ -2,6 +2,10 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* Falls back to a real, usable size when the parent's height is
+   * indeterminate (e.g. the stacked mobile layout in App.css) instead of
+   * collapsing height:100% to nothing. */
+  min-height: 200px;
 }
 
 .ace-editor-toolbar {

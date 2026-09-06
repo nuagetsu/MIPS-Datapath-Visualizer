@@ -59,9 +59,9 @@ export const SEGMENTS: Record<string, WireSegment> = {
   _ALU1: poly([330, 255, 450, 255], true),
   IMM_EXT: poly([80, 500, 200, 500], false),
   PC_: poly([170, 30, 200, 30], false),
-  _ADD1: poly([200, 30, 220, 30], true),
+  _ADD1: poly([200, 30, 250, 30], true),
   _IADDR: poly([200, 30, 200, 115, 115, 115], true),
-  ADD1_: poly([260, 45, 400, 45], false),
+  ADD1_: poly([290, 45, 400, 45], false),
   _MUX4: poly([400, 45, 780, 45], true),
   _ADD2: poly([400, 45, 400, 75, 500, 75], true),
   LS_ADD2: poly([375, 115, 500, 115], true),
@@ -75,9 +75,22 @@ export const SEGMENTS: Record<string, WireSegment> = {
   _RD2: poly([330, 375, 360, 375], false),
   _2MUX2: poly([360, 375, 390, 375], true),
   MUX2_ALU2: poly([420, 395, 450, 395], true),
+  // NEW — shamt field straight into the ALU's second operand, for sll/srl.
+  // There was never dedicated artwork for this in processor.js (it never
+  // supported shifts at all — see interpreter.ts's execA comment). Routed
+  // out from the shamt field box's right edge (x=80, mid-height y=465,
+  // below the Register File box's bottom edge at y=430 so it can run
+  // clear underneath it), then up into the ALU pentagon's bottom-right
+  // diagonal edge at x=480 (y=412.75, computed from aluPath's own
+  // (450,430)->(550,372.5) diagonal so the endpoint lands exactly on the
+  // boundary, same as every other wire here) — deliberately past the
+  // bottom-left corner (which would be x=450) so the vertical stub clears
+  // the ALUSrc control label's box (x=370-440) with room to spare for the
+  // "shamt" text label placed beside it, instead of the two overlapping.
+  SHAMT_ALU2: poly([80, 465, 480, 465, 480, 412.75], true),
   MWD_: poly([360, 375, 360, 410], false),
   _MWD_: loop(360, 410, 360, 420),
-  _MWD: poly([360, 420, 360, 465, 650, 465], true),
+  _MWD: poly([360, 420, 360, 500, 650, 500], true),
   RES_: poly([550, 350, 600, 350], false),
   _MADDR: poly([600, 350, 650, 350], true),
   MUX3_: poly([600, 350, 600, 460], false),
@@ -106,6 +119,7 @@ export const WIRE_TO_SEGMENTS: Record<WireId, string[]> = {
   RD1_ALU1: ["RD1_", "_RD1_", "_ALU1"],
   RD2_MUX2: ["RD2_", "_RD2_", "_RD2", "_2MUX2"],
   MUX2_ALU2: ["MUX2_ALU2"],
+  SHAMT_ALU2: ["SHAMT_ALU2"],
   RD2_MWD: ["RD2_", "_RD2_", "_RD2", "MWD_", "_MWD_", "_MWD"],
   RES_MADDR: ["RES_", "_MADDR"],
   RES_MUX3: ["RES_", "MUX3_", "_MUX3_", "_MUX3"],

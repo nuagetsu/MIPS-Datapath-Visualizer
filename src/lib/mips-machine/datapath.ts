@@ -33,11 +33,13 @@ import * as bit from "../Numbers/bit";
 import { int32, type Int32Bits } from "../Numbers/int32";
 
 /**
- * The 22 named wire segments mips.js's exec() lit up per micro-step, taken
+ * The named wire segments mips.js's exec() lit up per micro-step, taken
  * verbatim from processor.js's returned mark$* function names (its public
  * API — the internal per-segment `line["..."]` names that each mark$*
  * function fans out to are a drawing-layer implementation detail and
- * aren't part of this vocabulary).
+ * aren't part of this vocabulary). 22 of these are original ports;
+ * `SHAMT_ALU2` is new — processor.js never drew a shamt-into-ALU path at
+ * all (see datapathWires.ts's SEGMENTS.SHAMT_ALU2 for the added artwork).
  */
 export const WIRES = [
   "PC_IM",
@@ -54,6 +56,7 @@ export const WIRES = [
   "RD1_ALU1",
   "RD2_MUX2",
   "MUX2_ALU2",
+  "SHAMT_ALU2",
   "RD2_MWD",
   "RES_MADDR",
   "RES_MUX3",

@@ -40,7 +40,7 @@
  * coordinate system inside one `viewBox`; the SVG's on-page size is pure
  * CSS (DatapathDiagram.css), no JS resize handling.
  */
-import { int32, type Int32Bits } from "../lib/Numbers/int32";
+import type { Int32Bits } from "../lib/Numbers/int32";
 import * as bit from "../lib/Numbers/bit";
 import type { WireId } from "../lib/mips-machine/datapath";
 import { SEGMENTS, aluPath, activeSegmentKeys } from "../lib/mips-machine/datapathWires";
@@ -216,9 +216,10 @@ export function DatapathDiagram({ activeWires, state }: DatapathDiagramProps) {
             { text: "WD", x: 205, y: 405, width: 90, height: 50, align: "left" },
             { text: "RD1", x: 205, y: 250, width: 90, height: 50, align: "right" },
             { text: "RD2", x: 205, y: 370, width: 90, height: 50, align: "right" },
-            { text: "RegWrite", x: 205, y: 405, width: 90, height: 50, align: "right", bold: true, fill: "#2c5aa0" },
+            { text: "RegWrite", x: 205, y: 440, width: 90, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
           ]}
         />
+        <CtrlTick x={250} y1={430} y2={440} />
       </g>
 
       {/* ---- Sign Extend ---- */}
@@ -242,28 +243,31 @@ export function DatapathDiagram({ activeWires, state }: DatapathDiagramProps) {
           ]}
         />
         <CtrlTick x={500} y1={200} y2={230} />
-        {state?.vals.ALUres && (
-          <text x={500} y={355} className="dp-value" textAnchor="middle">
-            {int32.toHex(state.vals.ALUres)}
-          </text>
-        )}
+        {/* "shamt" label for the new SHAMT_ALU2 wire (see datapathWires.ts).
+        Anchored at x=490-520, just past (right of) the vertical stub's
+        x=480 entry point into the ALU's bottom diagonal edge — moved here
+        after the first placement (x=445-475, to the left of the stub)
+        still read too close to the arrow. fontSize omitted to match the
+        default used by every other label in this diagram (was 10,
+        visibly smaller). */}
+        <KonvaLabel spec={{ text: "shamt", x: 490, y: 435, width: 30, height: 20, align: "right", vAlign: "middle" }} />
       </g>
 
       {/* ---- Data Memory ---- */}
       <g>
-        <rect x={650} y={300} width={100} height={190} className="dp-box" fill="#e1ffc4" />
+        <rect x={650} y={300} width={100} height={220} className="dp-box" fill="#e1ffc4" />
         <KonvaLabels
           specs={[
             { text: "Data Memory", x: 655, y: 305, width: 90, height: 50, align: "center", bold: true, fill: "#c0392b" },
             { text: "Address", x: 655, y: 345, width: 90, height: 50, align: "left" },
-            { text: "Write Data", x: 655, y: 455, width: 40, height: 50, align: "left" },
+            { text: "Write Data", x: 655, y: 500, width: 40, height: 50, align: "left" },
             { text: "Read Data", x: 705, y: 455, width: 40, height: 50, align: "right" },
             { text: "MemWrite", x: 655, y: 270, width: 90, height: 50, align: "center", bold: true, fill: "#2c5aa0" },
-            { text: "MemRead", x: 655, y: 510, width: 90, height: 50, align: "center", bold: true, fill: "#2c5aa0" },
+            { text: "MemRead", x: 655, y: 530, width: 90, height: 50, align: "center", bold: true, fill: "#2c5aa0" },
           ]}
         />
         <CtrlTick x={700} y1={280} y2={300} />
-        <CtrlTick x={700} y1={490} y2={510} />
+        <CtrlTick x={700} y1={520} y2={530} />
       </g>
 
       {/* ---- Left Shift 2-bit ---- */}
@@ -274,14 +278,23 @@ export function DatapathDiagram({ activeWires, state }: DatapathDiagramProps) {
       </g>
 
       {/* ---- Add1 (PC+4) ---- */}
+      {/* Shifted 30 units right of its original x=220 so its left edge
+      (and the "4" input arrow) sit clearly apart from the PC->Instruction-
+      Address vertical line at x=200 — at the old position they were only
+      20px apart, which read as the same line kinking into the "4" arrow. */}
       <g>
-        <path d={aluPath(220, 15, 40, 60)} className="dp-box" fill="white" />
+        <path d={aluPath(250, 15, 40, 60)} className="dp-box" fill="white" />
         <KonvaLabels
           specs={[
-            { text: "Add", x: 225, y: 15, width: 40, height: 60, align: "center", vAlign: "middle", bold: true, fill: "#c0392b" },
-            { text: "4", x: 175, y: 50, width: 40, height: 30, align: "right", vAlign: "middle", bold: true },
+            { text: "Add", x: 255, y: 15, width: 40, height: 60, align: "center", vAlign: "middle", bold: true, fill: "#c0392b" },
+            { text: "4", x: 185, y: 50, width: 40, height: 30, align: "right", vAlign: "middle", bold: true },
           ]}
         />
+        {/* Constant 4 flowing into the adder's second (bottom-left) input,
+        at the same height (y=65) the "4" label is centered on. Starts at
+        x=230, clear of the label's right edge (x=225), so the wire's
+        stroke doesn't paint over the digit. */}
+        <line x1={230} y1={65} x2={250} y2={65} className="dp-wire" markerEnd="url(#dp-arrow)" />
       </g>
 
       {/* ---- Add2 (branch target) ---- */}

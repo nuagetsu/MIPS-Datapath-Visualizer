@@ -1,14 +1,18 @@
 /* The actual "reactive/scales with window size" mechanism: the SVG's
  * internal geometry is fixed (viewBox="0 0 900 580", matching every
- * coordinate ported from processor.js), and everything below just tells
- * the *element* how big to be on the page. The browser handles scaling
- * every path/rect/text inside proportionally — no JS involved. */
+ * coordinate ported from processor.js). Rather than deriving height from
+ * width via `aspect-ratio` (which only accounts for available width, and
+ * let the diagram grow taller than the viewport once its column got wide
+ * enough — e.g. after collapsing the tables panel), this fills both
+ * dimensions of whatever box its container gives it and leans on the
+ * SVG's own default `preserveAspectRatio="xMidYMid meet"` to scale the
+ * *content* uniformly to fit inside that box — the SVG equivalent of
+ * `object-fit: contain`. The outer element can be any aspect ratio; the
+ * drawing inside it never distorts and never overflows either axis. */
 .datapath-diagram {
   width: 100%;
-  height: auto;
-  /* Reserves the right shape in the layout before the SVG has painted,
-   * so surrounding flex/grid content doesn't jump once it loads. */
-  aspect-ratio: 900 / 580;
+  height: 100%;
+  display: block;
   /* Default is xMidYMid meet — scales uniformly and letterboxes rather
    * than stretching, which would skew the diagram's right angles. Stated
    * explicitly here as a reminder not to switch this to "none". */

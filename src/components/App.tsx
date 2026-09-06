@@ -111,6 +111,7 @@ function initializeMemory(data: DataDecl[] | null, memBank: MemoryBank): void {
 
 export function App() {
   const [codeEditor, setCodeEditor] = useState<AceEditorHandle | null>(null);
+  const [tablesCollapsed, setTablesCollapsed] = useState(false);
   const dispContainerRef = useRef<HTMLDivElement>(null);
   const consContainerRef = useRef<HTMLDivElement>(null);
   const dispEditor = useAceEditor(dispContainerRef, { mode: "ace/mode/mips", pcNum: true, write: false });
@@ -264,7 +265,7 @@ export function App() {
         </div>
       </header>
 
-      <main className="app-main">
+      <main className={tablesCollapsed ? "app-main app-main-tables-collapsed" : "app-main"}>
         <section className="app-editors">
           <AceEditorPanel onReady={setCodeEditor} />
           <div className="app-editor-panel">
@@ -281,12 +282,27 @@ export function App() {
           <DatapathDiagram activeWires={machine.current?.activeWires ?? []} state={machine.current} />
         </section>
 
-        <section className="app-tables">
-          <RegisterTable bank={regBank} />
-          <ValsTable bank={valsBank} />
-          <ControlTable bank={ctrlBank} />
-          <MemoryTable bank={memBank} />
-        </section>
+        <div className={tablesCollapsed ? "app-tables-tray app-tables-tray-collapsed" : "app-tables-tray"}>
+          <button
+            className="app-tables-handle"
+            onClick={() => setTablesCollapsed((c) => !c)}
+            aria-expanded={!tablesCollapsed}
+            aria-label={tablesCollapsed ? "Show tables" : "Hide tables"}
+            title={tablesCollapsed ? "Show tables" : "Hide tables"}
+          >
+            <span className="app-tables-handle-bar" />
+            <span className="app-tables-handle-bar" />
+            <span className="app-tables-handle-bar" />
+          </button>
+          {!tablesCollapsed && (
+            <section className="app-tables">
+              <RegisterTable bank={regBank} />
+              <ValsTable bank={valsBank} />
+              <ControlTable bank={ctrlBank} />
+              <MemoryTable bank={memBank} />
+            </section>
+          )}
+        </div>
       </main>
     </div>
   );

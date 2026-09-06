@@ -184,14 +184,22 @@ function execA(base: Base, vals: ValsSnapshot, op: Kind, fields: Base["fields"])
     // shifted (the AST node's "src") into the *rt* position and shamt into
     // bits [10:6] — so the value to shift is REGRD2 (read via the rt
     // field in stage D), and the shift amount is the SHAMT field, not the
-    // 16-bit immediate ALUSrc's mux normally selects. There's no dedicated
-    // wire for this path in the inherited datapath drawing (processor.js
-    // never supported shifts at all), so this only reuses RD1_ALU1/
-    // MUX2_ALU2 as an approximation — a real diagram would need new
-    // artwork for a shamt-into-ALU path, which is out of scope here.
+    // 16-bit immediate ALUSrc's mux normally selects. processor.js never
+    // supported shifts at all, so it never drew a shamt-into-ALU path —
+    // datapathWires.ts's SHAMT_ALU2 adds that artwork now. op1's source
+    // is still approximated, though: it lights up RD1_ALU1 even though
+    // the value actually comes from REGRD2, since there's likewise no
+    // dedicated "REGRD2 straight into ALU operand 1" wire in the
+    // inherited drawing. Only the operand-2/shamt side has real artwork.
     op1 = vals.REGRD2 ?? ZERO;
     op2 = bit.ext(fields.shamt, 32);
-    wires.push("RD1_ALU1", "MUX2_ALU2");
+    // Lights up the dedicated shamt->ALU path instead of MUX2_ALU2 (the
+    // normal ALUSrc-mux entry): the value physically arriving at the
+    // ALU's second operand for a shift is the shamt field straight out
+    // of the instruction word, not anything that passed through MUX 2,
+    // so MUX2_ALU2 should stay unlit for these ops. See datapathWires.ts's
+    // SHAMT_ALU2 for the new artwork this lights up.
+    wires.push("RD1_ALU1", "SHAMT_ALU2");
   } else {
     op1 = vals.REGRD1 ?? ZERO;
     const aluSrc = ctrlValue("ALUSrc", op) === 1;

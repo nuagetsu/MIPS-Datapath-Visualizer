@@ -59,29 +59,123 @@
   overflow: hidden;
 }
 
+/* Tables collapsed: shrink the third column down to just enough room for
+ * the tray's slide handle (see .app-tables-handle), handing the rest of
+ * its share to the diagram, rather than removing it outright — the
+ * handle needs somewhere to dock even when the tray itself is hidden.
+ * The diagram itself doesn't need any changes to take advantage of this —
+ * it already scales uniformly to whatever box it's given (see
+ * DatapathDiagram.css); this is purely about giving it a bigger box. */
+.app-main-tables-collapsed {
+  grid-template-columns: minmax(260px, 1fr) minmax(360px, 4fr) 28px;
+}
+
 .app-editors,
 .app-tables {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
 }
 
+/* ---- Tables tray: a slide handle permanently docked to the tray's left
+ * edge, with the actual tables sliding/fading in beside it. Styled as a
+ * distinct bordered panel (light gray background + border, matching
+ * .app-editor-panel elsewhere) so it visibly reads as its own collapsible
+ * section of the page, with the tab attached to and protruding from that
+ * panel's edge — like a folder tab sticking out of a folder body. */
+.app-tables-tray {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: visible;
+  background: #f2f2f0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 12px;
+}
+
+/* A folder-tab silhouette poking out from the tray's left edge: full
+ * height where it meets the tray's spine, tapering inward via diagonal
+ * edges to a shorter flat outer edge — like the tab on a manila folder,
+ * not a rounded pill. Positioned flush against the tray's edge, entirely
+ * protruding outward into the diagram's side. */
+.app-tables-handle {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translate(-100%, -50%);
+  flex-shrink: 0;
+  width: 20px;
+  height: 56px;
+  clip-path: polygon(100% 0%, 0% 25%, 0% 75%, 100% 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: none;
+  background: #f4f3ec;
+  cursor: pointer;
+  padding: 0;
+  filter: drop-shadow(-1px 1px 2px rgba(0, 0, 0, 0.18));
+  z-index: 1;
+}
+
+.app-tables-handle:hover {
+  background: #e8e6da;
+}
+
+.app-tables-handle-bar {
+  width: 2px;
+  height: 20px;
+  border-radius: 1px;
+  background: #888;
+}
+
+.app-tables-tray .app-tables {
+  flex: 1;
+  /* A quick fade+slide on mount, since the tables section is fully
+   * unmounted (not just hidden) when collapsed — there's no continuous
+   * width/transform to transition, so this fakes the "sliding out of the
+   * tray" feel on the way in instead. */
+  animation: app-tables-slide-in 0.18s ease;
+}
+
+@keyframes app-tables-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 .app-diagram {
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   justify-content: center;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
+  padding: 12px 0;
 }
 
-/* The diagram itself owns its aspect ratio (see DatapathDiagram.css) —
- * this just keeps it from being force-stretched by the grid cell. */
+/* The diagram itself owns its aspect ratio internally via
+ * preserveAspectRatio (see DatapathDiagram.css) — this just gives it a
+ * box to fill on both axes and keeps it from being force-stretched wider
+ * than is useful. Capped well above the diagram's native 900-unit width
+ * so collapsing the tables (see .app-main-tables-collapsed) actually lets
+ * it grow, rather than sitting at a fixed size regardless of how much
+ * room is freed up. */
 .app-diagram > * {
   width: 100%;
-  max-width: 900px;
+  height: 100%;
+  max-width: 1400px;
 }
 
 .app-editor-panel {
@@ -115,11 +209,49 @@
  * it's just no longer competing for horizontal space with the tables. */
 @media (max-width: 900px) {
   .app-main {
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
     overflow-y: auto;
+    overflow-x: auto;
   }
   .app-editors,
+  .app-diagram,
+  .app-tables-tray {
+    flex-shrink: 0;
+  }
   .app-tables {
     overflow-y: visible;
+  }
+  .app-editors {
+    overflow-y: visible;
+  }
+  /* The tray is a side-docked column on desktop; stacked full-width here,
+   * with the handle poking out from its top edge instead of its left. */
+  .app-tables-tray {
+    flex-direction: column;
+    overflow: visible;
+  }
+  .app-tables-handle {
+    top: 0;
+    left: 50%;
+    transform: translate(-50%, -100%);
+    width: 56px;
+    height: 20px;
+    clip-path: polygon(0% 100%, 25% 0%, 75% 0%, 100% 100%);
+    flex-direction: column;
+  }
+  .app-tables-handle-bar {
+    width: 20px;
+    height: 2px;
+  }
+  /* .app-diagram no longer sits in a row that spans the full viewport
+   * height (it's now one of three stacked auto-height rows), so its
+   * height is otherwise indeterminate — which leaves the SVG's
+   * height:100% with nothing to resolve against, collapsing it to a tiny
+   * intrinsic default rather than filling the available width. Giving it
+   * an explicit height here fixes that; the page already scrolls in this
+   * stacked layout, so a generous fixed share of the viewport is fine. */
+  .app-diagram {
+    height: 60vh;
   }
 }
