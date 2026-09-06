@@ -38,8 +38,21 @@ import { int32, type Int32Bits } from "../Numbers/int32";
  * API — the internal per-segment `line["..."]` names that each mark$*
  * function fans out to are a drawing-layer implementation detail and
  * aren't part of this vocabulary). 22 of these are original ports;
- * `SHAMT_ALU2` is new — processor.js never drew a shamt-into-ALU path at
- * all (see datapathWires.ts's SEGMENTS.SHAMT_ALU2 for the added artwork).
+ * everything else is new artwork processor.js never had at all, since it
+ * only ever supported the original 8 instruction kinds:
+ *   - `SHAMT_ALU2` — shamt straight into the ALU's second operand, for
+ *     sll/srl (see datapathWires.ts's SEGMENTS.SHAMT_ALU2).
+ *   - `MUX4_MUX5`/`JADDR_LS`/`LS_MUX5`/`MUX5_PC` — the jump datapath:
+ *     `MUX4_PC` (the old direct MUX4->PC wire) is gone, replaced by a new
+ *     `MUX 5` sitting between MUX 4 and PC. `MUX4_MUX5` is MUX 4's output
+ *     feeding MUX 5's "not a jump" input; `JADDR_LS` carries the raw
+ *     26-bit jump index out to a second "Left Shift 2-bit" unit (jumps
+ *     get their own shifter — this is a separate instruction field from
+ *     the branch immediate the existing shifter handles, not a shared
+ *     path); `LS_MUX5` carries that shifted result into MUX 5's jump
+ *     input; `MUX5_PC` is MUX 5's output, always active, running into PC.
+ *     See interpreter.ts's execR for the real concatenation-with-
+ *     PC+4[31:28] computation these wires now actually represent.
  */
 export const WIRES = [
   "PC_IM",
@@ -63,7 +76,10 @@ export const WIRES = [
   "MRD_MUX3",
   "ADD1_MUX4",
   "ADD2_MUX4",
-  "MUX4_PC",
+  "MUX4_MUX5",
+  "JADDR_LS",
+  "LS_MUX5",
+  "MUX5_PC",
   "MUX3_WD",
 ] as const;
 

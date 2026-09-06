@@ -1,6 +1,8 @@
 /* The actual "reactive/scales with window size" mechanism: the SVG's
- * internal geometry is fixed (viewBox="0 0 900 580", matching every
- * coordinate ported from processor.js). Rather than deriving height from
+ * internal geometry is fixed (viewBox="0 0 900 620" — originally
+ * 900×580, matching every coordinate ported from processor.js, extended
+ * to 620 to fit the jump shift-left ellipse added below that in
+ * DatapathDiagram.tsx). Rather than deriving height from
  * width via `aspect-ratio` (which only accounts for available width, and
  * let the diagram grow taller than the viewport once its column got wide
  * enough — e.g. after collapsing the tables panel), this fills both

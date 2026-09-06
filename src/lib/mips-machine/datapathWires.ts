@@ -66,7 +66,42 @@ export const SEGMENTS: Record<string, WireSegment> = {
   _ADD2: poly([400, 45, 400, 75, 500, 75], true),
   LS_ADD2: poly([375, 115, 500, 115], true),
   ADD2_MUX4: poly([540, 95, 780, 95], true),
-  MUX4_PC: poly([810, 70, 850, 70, 850, 5, 150, 5, 150, 15], true),
+  // Was MUX4_PC (poly([810,70,850,70,850,5,150,5,150,15])) — replaced by
+  // the four segments below, which insert a new MUX 5 (jump-select)
+  // between MUX 4 and PC instead of wiring MUX 4 straight into it. See
+  // datapath.ts's WIRES header comment for what each new WireId means.
+  //
+  // MUX4_MUX5: MUX 4's output, stepped up from its own y=70 exit height
+  // to MUX 5's first input port at y=45 (mirrors MUX 4's own two-inputs-
+  // on-the-left layout).
+  MUX4_MUX5: poly([810, 70, 825, 70, 825, 45, 840, 45], true),
+  // JADDR_LS: the raw 26-bit jump index, tapped visually off the same
+  // x=5 column IM_INST's own fetch arrow runs down (x=5, y=75->360) —
+  // drawn as an independent path rather than literally splitting that
+  // segment, so the existing, already-verified IM_INST geometry is left
+  // untouched. Continues straight down past where IM_INST turns right
+  // (y=360), dips to y=575 (5px below the funct field box's bottom edge
+  // at y=570, clearing it instead of running underneath it and getting
+  // hidden by its fill), runs right, then back up into the new jump
+  // shift-left ellipse's left edge (x=110).
+  JADDR_LS: poly([60, 370, 5, 370, 5, 590, 110, 590], true),
+  // LS_MUX5: the jump shift-left ellipse's output (right edge, x=190) to
+  // MUX 5's second input (right side, y=100 — deliberately NOT the bottom
+  // edge, which would put this wire's long vertical run at x≈850,
+  // directly on top of WD_'s own x=850 vertical stub below; entering from
+  // the right at x=890 instead keeps a real ~40px gap from it the whole
+  // way up, rather than the ~20px-or-less gap that read as "the same
+  // line" the last two times this diagram hit that problem (Add1's "4"
+  // arrow, the shamt arrow's first placement)).
+  LS_MUX5: poly([190, 590, 890, 590, 890, 100, 870, 100], true),
+  // MUX5_PC: MUX 5's output (right edge, y=70, same exit height MUX 4
+  // used to use directly) — same wraparound shape the old MUX4_PC wire
+  // had, just started 20 units further right (x=870 instead of x=810,
+  // since MUX 5 now sits where that wire used to begin) and turning the
+  // corner at x=885 instead of x=850 to keep clear of LS_MUX5's parallel
+  // vertical run at x=890 (they never share a y-range, but the extra
+  // gap costs nothing and avoids relying on that).
+  MUX5_PC: poly([870, 70, 885, 70, 885, 5, 150, 5, 150, 15], true),
   EXT_: poly([300, 500, 325, 500, 325, 415], false),
   _LS: poly([325, 415, 325, 140], true),
   _1MUX2: poly([325, 415, 390, 415], true),
@@ -126,7 +161,10 @@ export const WIRE_TO_SEGMENTS: Record<WireId, string[]> = {
   MRD_MUX3: ["MRD_MUX3"],
   ADD1_MUX4: ["ADD1_", "_MUX4"],
   ADD2_MUX4: ["ADD2_MUX4"],
-  MUX4_PC: ["MUX4_PC"],
+  MUX4_MUX5: ["MUX4_MUX5"],
+  JADDR_LS: ["JADDR_LS"],
+  LS_MUX5: ["LS_MUX5"],
+  MUX5_PC: ["MUX5_PC"],
   MUX3_WD: ["WD_", "_WD_", "_WD"],
 };
 

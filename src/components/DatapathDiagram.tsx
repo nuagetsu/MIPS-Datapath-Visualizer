@@ -36,9 +36,13 @@
  * transform around the original Konva origin point, which is the direct
  * SVG equivalent of Konva's own rotate-around-origin behavior.
  *
- * Responsive by construction — unchanged from before: fixed 900×580
- * coordinate system inside one `viewBox`; the SVG's on-page size is pure
- * CSS (DatapathDiagram.css), no JS resize handling.
+ * Responsive by construction — unchanged from before: fixed coordinate
+ * system inside one `viewBox` (originally 900×580, matching every
+ * coordinate ported from processor.js; bumped to 900×620 to actually
+ * contain the new jump shift-left ellipse sitting at cy=590 below that —
+ * see DatapathDiagram.css's header comment, which restates the exact
+ * value and needs updating in step with this one); the SVG's on-page size
+ * is pure CSS (DatapathDiagram.css), no JS resize handling.
  */
 import type { Int32Bits } from "../lib/Numbers/int32";
 import * as bit from "../lib/Numbers/bit";
@@ -134,7 +138,7 @@ export function DatapathDiagram({ activeWires, state }: DatapathDiagramProps) {
   ];
 
   return (
-    <svg className="datapath-diagram" viewBox="0 0 900 580" xmlns="http://www.w3.org/2000/svg">
+    <svg className="datapath-diagram" viewBox="0 0 900 620" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <marker id="dp-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" className="dp-arrowhead" />
@@ -350,6 +354,46 @@ export function DatapathDiagram({ activeWires, state }: DatapathDiagramProps) {
         />
         <CtrlTick x={795} y1={115} y2={125} />
       </g>
+
+      {/* ---- MUX 5 (Jump) ---- */}
+      {/* NEW — processor.js never supported jumps, so there was never a
+      second PC-select mux here at all; MUX 4's output used to wire
+      straight into PC (the old MUX4_PC segment). This sits between them:
+      input 1 (left, y=45) is MUX 4's branch-or-PC+4 result; input 2
+      (right, y=100) is the jump target, arriving via LS_MUX5 from the
+      jump shift-left ellipse below; output (right, y=70) continues to PC
+      via MUX5_PC — see datapathWires.ts for why input 2 and the output
+      share the right side instead of following MUX 4's left-in/right-out
+      convention (a real gap-from-WD_ concern, not just taste). */}
+      <g>
+        <rect x={840} y={25} width={30} height={90} rx={7.5} className="dp-box" fill="#f2f2f2" />
+        <KonvaLabel spec={{ text: "MUX 5", x: 840, y: 25, width: 30, height: 90, align: "center", vAlign: "middle", bold: true }} />
+        <CtrlTick x={855} y1={115} y2={125} />
+        <KonvaLabel spec={{ text: "Jump", x: 825, y: 130, width: 60, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" }} />
+      </g>
+
+      {/* ---- Left Shift 2-bit (Jump) ---- */}
+      {/* NEW — a second, dedicated shifter for the jump index. This is
+      deliberately NOT shared with the branch-offset "Left Shift 2-bit"
+      ellipse above (real MIPS hardware has two separate shift-left-2
+      units; the two fields being shifted — a sign-extended 16-bit branch
+      immediate vs. a raw 26-bit jump index — aren't the same data, so
+      reusing one box for both would misrepresent the datapath, not just
+      simplify its drawing). Fed by JADDR_LS, outputs via LS_MUX5.
+      cy=590 matches JADDR_LS/LS_MUX5's current endpoints in
+      datapathWires.ts (poly(...,110,590) / poly(190,590,...)) — cx/rx are
+      unchanged (110/190 = 150∓40), only the vertical position moved. */}
+      <g>
+        <ellipse cx={150} cy={590} rx={40} ry={18} className="dp-box" fill="#f2f2f2" />
+        <KonvaLabel spec={{ text: "Left Shift\n2-bit", x: 110, y: 572, width: 80, height: 36, align: "center", vAlign: "middle", bold: true }} />
+      </g>
+
+      {/* Labels the JADDR_LS wire's tap point (its first segment, running
+      left from the rd field at y=370) with what it actually carries — the
+      raw 26-bit jump index straight out of the fetched instruction word,
+      not anything decoded via the rd/shamt/funct field boxes it happens
+      to run past. Positioned directly beneath that segment. */}
+      <KonvaLabel spec={{ text: "inst[25:0]", x: 5, y: 374, width: 60, height: 14, align: "left", fontSize: 10 }} />
 
       {state?.error && (
         <text x={450} y={575} className="dp-error" textAnchor="middle">

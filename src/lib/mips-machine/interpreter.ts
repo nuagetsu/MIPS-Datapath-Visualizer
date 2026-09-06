@@ -291,11 +291,19 @@ function execR(base: Base, vals: ValsSnapshot, op: Kind, fields: Base["fields"],
 
   let pcNext: Int32Bits;
   if (jump) {
-    // No wire exists for this in the inherited datapath drawing —
-    // processor.js never had jump support, so there's no line segment to
-    // light up here. See datapath.ts's header comment.
+    // Real MIPS jump target: PC+4's top 4 bits [31:28] concatenated with
+    // the 26-bit jump index shifted left 2 (the low 2 bits are always 0 —
+    // instructions are word-aligned). This used to just be
+    // int32.sll(jaddr, 2), silently dropping PC+4[31:28] entirely — a
+    // real behavior bug (harmless for any program that stays within a
+    // 256MB segment, wrong regardless). Fixed here alongside adding real
+    // artwork for it: JADDR_LS/LS_MUX5 now show a genuine "shift left
+    // 2 -> into MUX5" path, so the interpreter needs to actually perform
+    // the concatenation those wires imply, not just approximate it.
     const jaddr = decodeJumpIndex(inst);
-    pcNext = int32.sll(jaddr, 2);
+    const pcHigh = [...bit.get(pcPlus4, 28, 4), ...new Array(28).fill(0)] as Int32Bits;
+    pcNext = int32.or(pcHigh, int32.sll(jaddr, 2));
+    wires.push("JADDR_LS", "LS_MUX5", "MUX5_PC");
   } else if (branch) {
     const res = vals.ALUres ?? ZERO;
     const taken = branchNE ? !int32.eq(res, ZERO) : int32.eq(res, ZERO);
@@ -306,11 +314,14 @@ function execR(base: Base, vals: ValsSnapshot, op: Kind, fields: Base["fields"],
       wires.push("ADD1_MUX4");
       pcNext = pcPlus4;
     }
+    // MUX 5 (new — see datapath.ts's header comment) now sits between
+    // MUX 4 and PC, choosing between MUX 4's branch-or-PC+4 result and
+    // the jump target. Non-jump instructions always select MUX 4's side.
+    wires.push("MUX4_MUX5", "MUX5_PC");
   } else {
-    wires.push("ADD1_MUX4");
+    wires.push("ADD1_MUX4", "MUX4_MUX5", "MUX5_PC");
     pcNext = pcPlus4;
   }
-  wires.push("MUX4_PC");
 
   if (writeError) {
     return { ...done(base, next, wires), error: writeError };
