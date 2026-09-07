@@ -1,8 +1,9 @@
 /* Same "reactive/scales with window size" approach discussed earlier:
  * ordinary CSS Grid/Flexbox for the page chrome, and the datapath diagram
- * (an <svg viewBox>, see DatapathDiagram.css) drops into it as a single
- * grid item that scales itself. Nothing here computes pixel positions in
- * JS. */
+ * (an <svg viewBox>, see DatapathDiagram.css) drops into it inside
+ * .app-diagram-wrap — a single grid item (that wrapper, not the diagram
+ * directly, since it also holds the shift/jump toggle toolbar above it)
+ * that scales itself. Nothing here computes pixel positions in JS. */
 
 .app {
   display: flex;
@@ -155,7 +156,56 @@
   }
 }
 
+/* Wraps the shift/jump toggle toolbar and the diagram itself as one grid
+ * item — .app-diagram used to sit directly in .app-main's grid; now this
+ * wrapper does, so the toolbar and the diagram can be stacked as two rows
+ * inside the same column without disturbing the three-column grid, which
+ * only relies on DOM order (editors | this wrapper | tables), not on any
+ * selector naming .app-diagram specifically. */
+.app-diagram-wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-diagram-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 4px 8px;
+  flex-shrink: 0;
+}
+
+.app-diagram-toggle {
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #f4f3ec;
+  cursor: pointer;
+}
+
+.app-diagram-toggle:hover {
+  background: #e8e6da;
+}
+
+/* "On" state uses the same blue every control-signal label in the
+ * diagram itself uses (#2c5aa0 — RegDst/Branch/ALUctrl/etc.), so a
+ * pressed toggle visually reads as "this control signal is live" rather
+ * than as an unrelated UI color. */
+.app-diagram-toggle-on {
+  background: #2c5aa0;
+  border-color: #2c5aa0;
+  color: white;
+}
+
+.app-diagram-toggle-on:hover {
+  background: #244b87;
+}
+
 .app-diagram {
+  flex: 1;
   display: flex;
   align-items: stretch;
   justify-content: center;
@@ -215,7 +265,7 @@
     overflow-x: auto;
   }
   .app-editors,
-  .app-diagram,
+  .app-diagram-wrap,
   .app-tables-tray {
     flex-shrink: 0;
   }
@@ -244,14 +294,17 @@
     width: 20px;
     height: 2px;
   }
-  /* .app-diagram no longer sits in a row that spans the full viewport
-   * height (it's now one of three stacked auto-height rows), so its
-   * height is otherwise indeterminate — which leaves the SVG's
+  /* .app-diagram-wrap no longer sits in a row that spans the full
+   * viewport height (it's now one of three stacked auto-height rows), so
+   * its height is otherwise indeterminate — which leaves the SVG's
    * height:100% with nothing to resolve against, collapsing it to a tiny
    * intrinsic default rather than filling the available width. Giving it
    * an explicit height here fixes that; the page already scrolls in this
-   * stacked layout, so a generous fixed share of the viewport is fine. */
-  .app-diagram {
+   * stacked layout, so a generous fixed share of the viewport is fine.
+   * (Was .app-diagram directly before the shift/jump toolbar wrapper was
+   * added — .app-diagram itself is `flex:1` now, so it still fills
+   * whatever this wrapper's height leaves after the toolbar row.) */
+  .app-diagram-wrap {
     height: 60vh;
   }
 }

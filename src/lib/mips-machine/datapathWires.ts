@@ -75,15 +75,19 @@ export const SEGMENTS: Record<string, WireSegment> = {
   // to MUX 5's first input port at y=45 (mirrors MUX 4's own two-inputs-
   // on-the-left layout).
   MUX4_MUX5: poly([810, 70, 825, 70, 825, 45, 840, 45], true),
-  // JADDR_LS: the raw 26-bit jump index, tapped visually off the same
-  // x=5 column IM_INST's own fetch arrow runs down (x=5, y=75->360) —
-  // drawn as an independent path rather than literally splitting that
-  // segment, so the existing, already-verified IM_INST geometry is left
-  // untouched. Continues straight down past where IM_INST turns right
-  // (y=360), dips to y=575 (5px below the funct field box's bottom edge
-  // at y=570, clearing it instead of running underneath it and getting
-  // hidden by its fill), runs right, then back up into the new jump
-  // shift-left ellipse's left edge (x=110).
+  // JADDR_LS: the raw 26-bit jump index. Tapped from x=60 (the field
+  // column's own left edge) at y=370 — inside the rd field's row (y=360-
+  // 430) — then run left to x=5, since that's the actual instruction bus
+  // column the raw fetched word already occupies (IM_INST's own vertical
+  // run uses the same x=5, just for y=75->360; this continues that same
+  // column further down rather than reusing rd's decoded value, which is
+  // labeled directly beneath this tap — see the "inst[25:0]" label in
+  // DatapathDiagram.tsx — precisely because this ISN'T rd, it just runs
+  // past that row on its way down). Drops to y=590 (matching the jump
+  // shift-left ellipse's current cy in DatapathDiagram.tsx — keep these
+  // two in sync if either moves again), clearing the funct field box's
+  // bottom edge at y=570 by 20px, then right into the ellipse's left
+  // edge (x=110).
   JADDR_LS: poly([60, 370, 5, 370, 5, 590, 110, 590], true),
   // LS_MUX5: the jump shift-left ellipse's output (right edge, x=190) to
   // MUX 5's second input (right side, y=100 — deliberately NOT the bottom
@@ -92,7 +96,8 @@ export const SEGMENTS: Record<string, WireSegment> = {
   // the right at x=890 instead keeps a real ~40px gap from it the whole
   // way up, rather than the ~20px-or-less gap that read as "the same
   // line" the last two times this diagram hit that problem (Add1's "4"
-  // arrow, the shamt arrow's first placement)).
+  // arrow, the shamt arrow's first placement)). Starts at y=590, matching
+  // JADDR_LS's new endpoint / the ellipse's current cy.
   LS_MUX5: poly([190, 590, 890, 590, 890, 100, 870, 100], true),
   // MUX5_PC: MUX 5's output (right edge, y=70, same exit height MUX 4
   // used to use directly) — same wraparound shape the old MUX4_PC wire
@@ -135,6 +140,22 @@ export const SEGMENTS: Record<string, WireSegment> = {
   WD_: poly([810, 482.5, 850, 482.5, 850, 575, 185, 575, 185, 505], false),
   _WD_: loop(185, 505, 185, 495),
   _WD: poly([185, 495, 185, 410, 200, 410], true),
+};
+
+/**
+ * Fallback geometry for the pre-jump layout — MUX 4 wired straight into
+ * PC, before MUX 5/JADDR_LS/LS_MUX5/MUX5_PC existed. Deliberately NOT
+ * part of SEGMENTS/WIRE_TO_SEGMENTS: it isn't a real WireId, and the
+ * interpreter should never be able to light it — execStage() always
+ * computes the jump datapath correctly regardless of what the UI shows.
+ * This exists purely so DatapathDiagram can render the "Jump" feature
+ * toggle's off state (see its own header comment) by substituting this
+ * one segment back in and hiding MUX 5's real geometry, rather than
+ * maintaining two divergent execStage() implementations to match two
+ * divergent diagrams.
+ */
+export const LEGACY_SEGMENTS: Record<string, WireSegment> = {
+  MUX4_PC: poly([810, 70, 850, 70, 850, 5, 150, 5, 150, 15], true),
 };
 
 /** Ported directly from processor.js's mark$*() functions — which

@@ -47,9 +47,21 @@
 import type { Int32Bits } from "../lib/Numbers/int32";
 import * as bit from "../lib/Numbers/bit";
 import type { WireId } from "../lib/mips-machine/datapath";
-import { SEGMENTS, aluPath, activeSegmentKeys } from "../lib/mips-machine/datapathWires";
+import { SEGMENTS, LEGACY_SEGMENTS, aluPath, activeSegmentKeys } from "../lib/mips-machine/datapathWires";
 import type { MachineState } from "../lib/mips-machine/machineState";
 import "./DatapathDiagram.css";
+
+/** Which of the two features added on top of processor.js's original
+ * 8-instruction datapath should actually render. Purely a presentation
+ * toggle — execStage() (interpreter.ts) always computes shifts/jumps
+ * correctly regardless of these; see LEGACY_SEGMENTS's header comment in
+ * datapathWires.ts for why that separation matters. Both default to
+ * true, so any caller that doesn't pass `features` at all gets today's
+ * behavior unchanged. */
+export interface DatapathFeatures {
+  shift?: boolean;
+  jump?: boolean;
+}
 
 export interface DatapathDiagramProps {
   /** Which wires are lit for the current micro-step. */
@@ -58,6 +70,9 @@ export interface DatapathDiagramProps {
    * ALU result) render as text overlays. Omit for just the static
    * schematic. */
   state?: MachineState | null;
+  /** Optional — toggles the shift/jump artwork independently. Omitted
+   * fields and the whole prop default to shown (both true). */
+  features?: DatapathFeatures;
 }
 
 function fieldBits(inst: Int32Bits, idx: number, len: number): string {
@@ -124,8 +139,35 @@ function CtrlTick({ x, y1, y2 }: { x: number; y1: number; y2: number }) {
   return <line x1={x} y1={y1} x2={x} y2={y2} className="dp-ctrl-line" markerEnd="url(#dp-arrow-blue)" />;
 }
 
-export function DatapathDiagram({ activeWires, state }: DatapathDiagramProps) {
-  const active = activeSegmentKeys(activeWires);
+export function DatapathDiagram({ activeWires, state, features }: DatapathDiagramProps) {
+  const shift = features?.shift ?? true;
+  const jump = features?.jump ?? true;
+
+  // Remap SHAMT_ALU2 -> MUX2_ALU2 before computing active segments, so
+  // turning the "Shift" toggle off makes a shift micro-step light the
+  // ordinary ALUSrc-mux entry exactly the way it used to before this
+  // artwork existed, instead of lighting a wire that's about to be hidden
+  // (which would just make the ALU's second operand look permanently
+  // dark for every shift instruction).
+  const remappedWires = shift ? activeWires : activeWires.map((w) => (w === "SHAMT_ALU2" ? "MUX2_ALU2" : w));
+  const active = activeSegmentKeys(remappedWires);
+  // Jump can't be remapped the same way — MUX4_PC isn't a real WireId
+  // anymore (see LEGACY_SEGMENTS's header comment), so it can't flow
+  // through activeSegmentKeys's WireId[]-typed input. Light it directly
+  // whenever any of the real jump-path wires were active this step.
+  if (!jump && activeWires.some((w) => w === "MUX4_MUX5" || w === "LS_MUX5" || w === "MUX5_PC")) {
+    active.add("MUX4_PC");
+  }
+
+  // Segments to hide entirely when a feature is off, and — for jump only
+  // — the legacy segment to substitute back in. Shift needs no
+  // substitute: disabling it just means SHAMT_ALU2 never renders and
+  // MUX2_ALU2 (already real artwork, never removed) carries on as before.
+  const hiddenSegments = new Set<string>();
+  if (!shift) hiddenSegments.add("SHAMT_ALU2");
+  if (!jump) ["MUX4_MUX5", "JADDR_LS", "LS_MUX5", "MUX5_PC"].forEach((k) => hiddenSegments.add(k));
+  const segmentsToRender = jump ? SEGMENTS : { ...SEGMENTS, ...LEGACY_SEGMENTS };
+
   const inst = state?.inst ?? null;
 
   const fieldRows: { name: string; idx: number; len: number; y: number }[] = [
@@ -153,17 +195,19 @@ export function DatapathDiagram({ activeWires, state }: DatapathDiagramProps) {
 
       {/* ---- Wires (drawn first, so component boxes sit on top) ---- */}
       <g className="dp-wires">
-        {Object.entries(SEGMENTS).map(([key, seg]) => {
-          const isActive = active.has(key);
-          return (
-            <path
-              key={key}
-              d={seg.d}
-              className={isActive ? "dp-wire dp-wire-active" : "dp-wire"}
-              markerEnd={seg.arrow ? `url(#${isActive ? "dp-arrow-active" : "dp-arrow"})` : undefined}
-            />
-          );
-        })}
+        {Object.entries(segmentsToRender)
+          .filter(([key]) => !hiddenSegments.has(key))
+          .map(([key, seg]) => {
+            const isActive = active.has(key);
+            return (
+              <path
+                key={key}
+                d={seg.d}
+                className={isActive ? "dp-wire dp-wire-active" : "dp-wire"}
+                markerEnd={seg.arrow ? `url(#${isActive ? "dp-arrow-active" : "dp-arrow"})` : undefined}
+              />
+            );
+          })}
       </g>
 
       {/* ---- Instruction Memory ---- */}
@@ -247,14 +291,15 @@ export function DatapathDiagram({ activeWires, state }: DatapathDiagramProps) {
           ]}
         />
         <CtrlTick x={500} y1={200} y2={230} />
-        {/* "shamt" label for the new SHAMT_ALU2 wire (see datapathWires.ts).
+        {/* "shamt" label for the SHAMT_ALU2 wire (see datapathWires.ts).
         Anchored at x=490-520, just past (right of) the vertical stub's
         x=480 entry point into the ALU's bottom diagonal edge — moved here
         after the first placement (x=445-475, to the left of the stub)
         still read too close to the arrow. fontSize omitted to match the
         default used by every other label in this diagram (was 10,
-        visibly smaller). */}
-        <KonvaLabel spec={{ text: "shamt", x: 490, y: 435, width: 30, height: 20, align: "right", vAlign: "middle" }} />
+        visibly smaller). Hidden along with SHAMT_ALU2 itself when the
+        "Shift" feature toggle is off. */}
+        {shift && <KonvaLabel spec={{ text: "shamt", x: 490, y: 435, width: 30, height: 20, align: "right", vAlign: "middle" }} />}
       </g>
 
       {/* ---- Data Memory ---- */}
@@ -358,19 +403,22 @@ export function DatapathDiagram({ activeWires, state }: DatapathDiagramProps) {
       {/* ---- MUX 5 (Jump) ---- */}
       {/* NEW — processor.js never supported jumps, so there was never a
       second PC-select mux here at all; MUX 4's output used to wire
-      straight into PC (the old MUX4_PC segment). This sits between them:
+      straight into PC (the old MUX4_PC segment, still available as
+      LEGACY_SEGMENTS.MUX4_PC for when the "Jump" toggle below is off).
       input 1 (left, y=45) is MUX 4's branch-or-PC+4 result; input 2
       (right, y=100) is the jump target, arriving via LS_MUX5 from the
       jump shift-left ellipse below; output (right, y=70) continues to PC
       via MUX5_PC — see datapathWires.ts for why input 2 and the output
       share the right side instead of following MUX 4's left-in/right-out
       convention (a real gap-from-WD_ concern, not just taste). */}
-      <g>
-        <rect x={840} y={25} width={30} height={90} rx={7.5} className="dp-box" fill="#f2f2f2" />
-        <KonvaLabel spec={{ text: "MUX 5", x: 840, y: 25, width: 30, height: 90, align: "center", vAlign: "middle", bold: true }} />
-        <CtrlTick x={855} y1={115} y2={125} />
-        <KonvaLabel spec={{ text: "Jump", x: 825, y: 130, width: 60, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" }} />
-      </g>
+      {jump && (
+        <g>
+          <rect x={840} y={25} width={30} height={90} rx={7.5} className="dp-box" fill="#f2f2f2" />
+          <KonvaLabel spec={{ text: "MUX 5", x: 840, y: 25, width: 30, height: 90, align: "center", vAlign: "middle", bold: true }} />
+          <CtrlTick x={855} y1={115} y2={125} />
+          <KonvaLabel spec={{ text: "Jump", x: 825, y: 130, width: 60, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" }} />
+        </g>
+      )}
 
       {/* ---- Left Shift 2-bit (Jump) ---- */}
       {/* NEW — a second, dedicated shifter for the jump index. This is
@@ -383,17 +431,19 @@ export function DatapathDiagram({ activeWires, state }: DatapathDiagramProps) {
       cy=590 matches JADDR_LS/LS_MUX5's current endpoints in
       datapathWires.ts (poly(...,110,590) / poly(190,590,...)) — cx/rx are
       unchanged (110/190 = 150∓40), only the vertical position moved. */}
-      <g>
-        <ellipse cx={150} cy={590} rx={40} ry={18} className="dp-box" fill="#f2f2f2" />
-        <KonvaLabel spec={{ text: "Left Shift\n2-bit", x: 110, y: 572, width: 80, height: 36, align: "center", vAlign: "middle", bold: true }} />
-      </g>
+      {jump && (
+        <g>
+          <ellipse cx={150} cy={590} rx={40} ry={18} className="dp-box" fill="#f2f2f2" />
+          <KonvaLabel spec={{ text: "Left Shift\n2-bit", x: 110, y: 572, width: 80, height: 36, align: "center", vAlign: "middle", bold: true }} />
+        </g>
+      )}
 
       {/* Labels the JADDR_LS wire's tap point (its first segment, running
       left from the rd field at y=370) with what it actually carries — the
       raw 26-bit jump index straight out of the fetched instruction word,
       not anything decoded via the rd/shamt/funct field boxes it happens
       to run past. Positioned directly beneath that segment. */}
-      <KonvaLabel spec={{ text: "inst[25:0]", x: 5, y: 374, width: 60, height: 14, align: "left", fontSize: 10 }} />
+      {jump && <KonvaLabel spec={{ text: "inst[25:0]", x: 5, y: 374, width: 60, height: 14, align: "left", fontSize: 10 }} />}
 
       {state?.error && (
         <text x={450} y={575} className="dp-error" textAnchor="middle">

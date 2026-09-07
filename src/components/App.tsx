@@ -112,6 +112,15 @@ function initializeMemory(data: DataDecl[] | null, memBank: MemoryBank): void {
 export function App() {
   const [codeEditor, setCodeEditor] = useState<AceEditorHandle | null>(null);
   const [tablesCollapsed, setTablesCollapsed] = useState(false);
+  // Presentation-only toggles for the datapath diagram's shift/jump
+  // artwork (see DatapathDiagram's DatapathFeatures/LEGACY_SEGMENTS
+  // comments) — default to both shown, matching the diagram's current
+  // out-of-the-box behavior. Purely visual: execStage() always computes
+  // shifts/jumps correctly regardless of these, so toggling either one
+  // just changes what's drawn for the *same* underlying MachineState
+  // history, including re-rendering past steps correctly.
+  const [showShift, setShowShift] = useState(true);
+  const [showJump, setShowJump] = useState(true);
   const dispContainerRef = useRef<HTMLDivElement>(null);
   const consContainerRef = useRef<HTMLDivElement>(null);
   const dispEditor = useAceEditor(dispContainerRef, { mode: "ace/mode/mips", pcNum: true, write: false });
@@ -278,8 +287,32 @@ export function App() {
           </div>
         </section>
 
-        <section className="app-diagram">
-          <DatapathDiagram activeWires={machine.current?.activeWires ?? []} state={machine.current} />
+        <section className="app-diagram-wrap">
+          <div className="app-diagram-toolbar">
+            <button
+              className={showShift ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
+              onClick={() => setShowShift((s) => !s)}
+              aria-pressed={showShift}
+              title={showShift ? "Hide shift (sll/srl) artwork" : "Show shift (sll/srl) artwork"}
+            >
+              Toggle Shift
+            </button>
+            <button
+              className={showJump ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
+              onClick={() => setShowJump((j) => !j)}
+              aria-pressed={showJump}
+              title={showJump ? "Hide jump (j) artwork" : "Show jump (j) artwork"}
+            >
+              Toggle Jump
+            </button>
+          </div>
+          <div className="app-diagram">
+            <DatapathDiagram
+              activeWires={machine.current?.activeWires ?? []}
+              state={machine.current}
+              features={{ shift: showShift, jump: showJump }}
+            />
+          </div>
         </section>
 
         <div className={tablesCollapsed ? "app-tables-tray app-tables-tray-collapsed" : "app-tables-tray"}>
