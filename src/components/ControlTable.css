@@ -3,6 +3,7 @@
   border-collapse: collapse;
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12px;
+  background: #e0e0e0;
 }
 
 .control-table th,
@@ -15,7 +16,7 @@
 .control-table thead {
   position: sticky;
   top: 0;
-  background: var(--code-bg, #f4f3ec);
+  background: #e0e0e0;
 }
 
 .ctrl-corner,
@@ -23,7 +24,7 @@
   text-align: left;
   position: sticky;
   left: 0;
-  background: var(--code-bg, #f4f3ec);
+  background: #e0e0e0;
 }
 
 .ctrl-cell input {
@@ -32,6 +33,19 @@
   font-family: inherit;
   font-size: inherit;
   padding: 1px 2px;
+}
+
+/* Every cell here is always readonly (see ControlCell's <input readOnly>
+ * below) — matches the flush-background/muted-text/default-cursor
+ * treatment RegisterTable.css and ValsTable.css use for their own
+ * read-only inputs. Background stays transparent (not a flat color) so
+ * the mark-color backgrounds below (applied to .ctrl-cell, the <td> the
+ * input sits inside) still show through correctly. */
+.ctrl-cell input:read-only {
+  background: transparent;
+  border-color: transparent;
+  color: #666;
+  cursor: default;
 }
 
 /* Mark colors — same four states as the other tables, applied per-cell and
@@ -47,7 +61,7 @@
  * matching selector specificity, not source order. */
 .ctrl-head.mark-default,
 .ctrl-cell.mark-default { background: transparent; }
-.ctrl-name.mark-default { background: var(--code-bg, #f4f3ec); }
+.ctrl-name.mark-default { background: #e0e0e0; }
 .ctrl-head.mark-success,
 .ctrl-cell.mark-success,
 .ctrl-name.mark-success { background: rgba(76, 175, 80, 0.15); }

@@ -186,20 +186,21 @@ function execA(base: Base, vals: ValsSnapshot, op: Kind, fields: Base["fields"])
     // field in stage D), and the shift amount is the SHAMT field, not the
     // 16-bit immediate ALUSrc's mux normally selects. processor.js never
     // supported shifts at all, so it never drew a shamt-into-ALU path —
-    // datapathWires.ts's SHAMT_ALU2 adds that artwork now. op1's source
-    // is still approximated, though: it lights up RD1_ALU1 even though
-    // the value actually comes from REGRD2, since there's likewise no
-    // dedicated "REGRD2 straight into ALU operand 1" wire in the
-    // inherited drawing. Only the operand-2/shamt side has real artwork.
+    // datapathWires.ts's SHAMT_ALU2 adds that artwork now.
     op1 = vals.REGRD2 ?? ZERO;
     op2 = bit.ext(fields.shamt, 32);
-    // Lights up the dedicated shamt->ALU path instead of MUX2_ALU2 (the
-    // normal ALUSrc-mux entry): the value physically arriving at the
-    // ALU's second operand for a shift is the shamt field straight out
-    // of the instruction word, not anything that passed through MUX 2,
-    // so MUX2_ALU2 should stay unlit for these ops. See datapathWires.ts's
-    // SHAMT_ALU2 for the new artwork this lights up.
-    wires.push("RD1_ALU1", "SHAMT_ALU2");
+    // op1's source is still approximated: there's no dedicated "REGRD2
+    // straight into ALU operand 1" wire in the inherited drawing, so
+    // RD1_ALU1 stays dark for shifts rather than lighting for a value
+    // that didn't actually travel that path. Instead, REGRD2's real
+    // route out of the register file (RD2_MUX2/MUX2_ALU2 — the normal
+    // ALUSrc-mux path, already-real artwork) lights up alongside the
+    // dedicated SHAMT_ALU2 path, so the diagram shows the shifted value
+    // leaving the register file via its actual RD2 port even though it
+    // still doesn't have its own dedicated wire into the ALU's first
+    // operand. Still an approximation — see Handoff #4 §4 — just a
+    // differently-placed one than before.
+    wires.push("RD2_MUX2", "MUX2_ALU2", "SHAMT_ALU2");
   } else {
     op1 = vals.REGRD1 ?? ZERO;
     const aluSrc = ctrlValue("ALUSrc", op) === 1;

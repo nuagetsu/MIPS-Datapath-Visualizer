@@ -3,6 +3,7 @@
   border-collapse: collapse;
   font-family: ui-monospace, Consolas, monospace;
   font-size: 13px;
+  background: #e0e0e0;
 }
 
 .register-table th,
@@ -14,7 +15,7 @@
 .register-table thead {
   position: sticky;
   top: 0;
-  background: var(--code-bg, #f4f3ec);
+  background: #e0e0e0;
 }
 
 .reg-name sup {
@@ -33,6 +34,21 @@
   font-family: inherit;
   font-size: inherit;
   padding: 1px 4px;
+}
+
+/* Read-only inputs ($pc, $zero — see registers.ts's editable:false) sit
+ * flush against the table's own background instead of standing out as a
+ * fillable white box: a bordered, white-backed input still reads as
+ * "editable" regardless of the readOnly attribute underneath it, so it's
+ * the box treatment itself that needs to go, not just the attribute.
+ * Matches the same treatment applied in ValsTable.css/ControlTable.css
+ * (entirely read-only tables) so the visual language is consistent
+ * everywhere a value can't be typed into, not just here. */
+.reg-value input:read-only {
+  background: transparent;
+  border-color: transparent;
+  color: #666;
+  cursor: default;
 }
 
 .base-toggle {

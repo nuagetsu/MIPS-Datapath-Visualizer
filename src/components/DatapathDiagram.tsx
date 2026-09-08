@@ -304,19 +304,19 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
 
       {/* ---- Data Memory ---- */}
       <g>
-        <rect x={650} y={300} width={100} height={220} className="dp-box" fill="#e1ffc4" />
+        <rect x={650} y={300} width={100} height={200} className="dp-box" fill="#e1ffc4" />
         <KonvaLabels
           specs={[
             { text: "Data Memory", x: 655, y: 305, width: 90, height: 50, align: "center", bold: true, fill: "#c0392b" },
             { text: "Address", x: 655, y: 345, width: 90, height: 50, align: "left" },
-            { text: "Write Data", x: 655, y: 500, width: 40, height: 50, align: "left" },
-            { text: "Read Data", x: 705, y: 455, width: 40, height: 50, align: "right" },
+            { text: "Write Data", x: 655, y: 470, width: 40, height: 50, align: "left" },
+            { text: "Read Data", x: 705, y: 435, width: 40, height: 50, align: "right" },
             { text: "MemWrite", x: 655, y: 270, width: 90, height: 50, align: "center", bold: true, fill: "#2c5aa0" },
-            { text: "MemRead", x: 655, y: 530, width: 90, height: 50, align: "center", bold: true, fill: "#2c5aa0" },
+            { text: "MemRead", x: 655, y: 510, width: 90, height: 50, align: "center", bold: true, fill: "#2c5aa0" },
           ]}
         />
         <CtrlTick x={700} y1={280} y2={300} />
-        <CtrlTick x={700} y1={520} y2={530} />
+        <CtrlTick x={700} y1={500} y2={510} />
       </g>
 
       {/* ---- Left Shift 2-bit ---- */}
@@ -378,14 +378,14 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
 
       {/* ---- MUX 3 (MemToReg) ---- */}
       <g>
-        <rect x={780} y={450} width={30} height={70} rx={7.5} className="dp-box" fill="#f2f2f2" />
+        <rect x={780} y={430} width={30} height={110} rx={7.5} className="dp-box" fill="#f2f2f2" />
         <KonvaLabels
           specs={[
             { text: "MUX 3", x: 780, y: 450, width: 30, height: 70, align: "center", vAlign: "middle", bold: true },
-            { text: "MemToReg", x: 760, y: 525, width: 70, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
+            { text: "MemToReg", x: 760, y: 545, width: 70, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
           ]}
         />
-        <CtrlTick x={795} y1={520} y2={530} />
+        <CtrlTick x={795} y1={540} y2={550} />
       </g>
 
       {/* ---- MUX 4 (Branch) ---- */}

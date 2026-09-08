@@ -93,17 +93,32 @@
   min-width: 0;
   min-height: 0;
   overflow: visible;
-  background: #f2f2f0;
+  background: #e0e0e0;
   border: 1px solid #ddd;
   border-radius: 4px;
   padding: 12px;
+  /* Small inset from the grid column's left edge — the tray's actual
+   * rendered width ends up slightly narrower than the column it sits in,
+   * which is what gives the folder tab (.app-tables-handle, positioned
+   * flush against this box's own left edge) enough clearance from the
+   * diagram's rightmost wires (MUX 4/5, the jump wraparound) instead of
+   * overlapping them. Left-only, since the tab only protrudes leftward. */
+  margin-left: 10px;
 }
 
 /* A folder-tab silhouette poking out from the tray's left edge: full
  * height where it meets the tray's spine, tapering inward via diagonal
  * edges to a shorter flat outer edge — like the tab on a manila folder,
  * not a rounded pill. Positioned flush against the tray's edge, entirely
- * protruding outward into the diagram's side. */
+ * protruding outward into the diagram's side. Two stacked drop-shadows:
+ * the first (0 0, larger blur) is unoffset, so it spreads evenly on all
+ * sides of the tab's clip-path silhouette — including the pointed tip,
+ * which a single directional shadow wouldn't reach — reading as a shadow
+ * that wraps around the whole shape rather than falling toward one edge.
+ * The second is the original tighter directional shadow, kept on top of
+ * it for a bit of depth/lift rather than a flat all-around glow alone.
+ * filter (not box-shadow), since box-shadow can't follow a clip-path — it
+ * would draw a rectangle's shadow behind the tab's actual notched shape. */
 .app-tables-handle {
   position: absolute;
   top: 50%;
@@ -111,29 +126,28 @@
   transform: translate(-100%, -50%);
   flex-shrink: 0;
   width: 20px;
-  height: 56px;
+  height: 84px;
   clip-path: polygon(100% 0%, 0% 25%, 0% 75%, 100% 100%);
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 2px;
   border: none;
-  background: #f4f3ec;
+  background: #e0e0e0;
   cursor: pointer;
   padding: 0;
-  filter: drop-shadow(-1px 1px 2px rgba(0, 0, 0, 0.18));
   z-index: 1;
 }
 
 .app-tables-handle:hover {
-  background: #e8e6da;
+  background: #cac8be;
 }
 
 .app-tables-handle-bar {
   width: 2px;
-  height: 20px;
+  height: 25px;
   border-radius: 1px;
-  background: #888;
+  background: #7c7c7c;
 }
 
 .app-tables-tray .app-tables {
