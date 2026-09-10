@@ -1,7 +1,5 @@
-// GEN BY CLAUD, HAVENT LOOKED THROUGH AT ALL.
 /**
- * Faithful port of int32.js, now that the real source is available —
- * replaces the earlier from-scratch reimplementation. Delegates to bit.ts
+ * Faithful port of int32.js. Delegates to bit.ts
  * for raw bitwise ops, exactly as the original delegated to bit.js.
  *
  * Two bugs found in the original, fixed here (not preserved):

@@ -1,6 +1,5 @@
 /**
- * Faithful port of bit.js, now that the real source is available —
- * replaces the earlier inferred reimplementation.
+ * Faithful port of bit.js.
  *
  * One bug found and fixed (not preserved): sll()/srl()'s minimum-amount
  * validation (bit$InvalidMin) constructed an ArgumentError but never threw

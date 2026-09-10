@@ -1,5 +1,5 @@
 /**
- * Faithful port of err.js, now that the real source is available. Field
+ * Faithful port of err.js. Field
  * names (comp, arg, loc) match the original exactly. Implemented as real
  * ES6 classes extending Error (cleaner than the original's manual
  * prototype-subclassing helper) — same external shape, same behavior.

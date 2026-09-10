@@ -1,19 +1,6 @@
 /**
  * Canonical MIPS register list — the definitional data reg.js's
  * reg$init() built its table from, extracted into a plain data structure.
- *
- * $at (1) and $k0/$k1/$gp/$sp/$fp/$ra (26-31) are deliberately excluded —
- * matching the same decision made in mips.peggy's Reg rule. These are
- * conventionally reserved (assembler-temporary, OS/kernel,
- * global/stack/frame pointer, return address), and this simulator has no
- * pseudo-instruction expansion, OS, or calling convention (no `jal`) that
- * would give them real meaning — allowing them anyway would just let a
- * program use `$sp` as an ordinary scratch register, teaching the wrong
- * mental model. Since the grammar already rejects these at parse time
- * (by name and by number), the interpreter can never actually reference
- * them — but they're excluded here too, rather than just left unreachable,
- * so the register table doesn't display 7 rows that could never be
- * written to by any program that could ever assemble.
  */
 export interface RegisterDef {
   /** Bare name, no leading $ — e.g. "t0", "pc", "zero". */
@@ -24,6 +11,7 @@ export interface RegisterDef {
   readonly: boolean;
   /** If false, the UI input is read-only — $zero and $pc (pc is only
    * ever written programmatically by the interpreter, not by the user). */
+  // TODO: Consider whether to add registers $1, $26-$31 and make them only readonly...
   editable: boolean;
 }
 

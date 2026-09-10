@@ -2,6 +2,8 @@ FROM node:lts-alpine
 
 WORKDIR /app
 
+RUN apk add --no-cache git
+
 # Copy dependency files first to utilize Docker layer caching
 COPY package*.json ./
 
