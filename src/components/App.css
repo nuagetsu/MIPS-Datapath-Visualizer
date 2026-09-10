@@ -47,6 +47,42 @@
   color: #555;
 }
 
+.app-feedback-group {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;     /* NEW — lets the button drop to its own line if the group runs out of width */
+  align-items: center;
+  gap: 6px;
+  min-width: 0;         /* NEW — lets the group actually shrink instead of forcing overflow */
+}
+
+.app-feedback-link-label {
+  padding: 6px 12px;
+  color: #ce3636;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: normal;  /* was nowrap — lets long label text wrap instead of pushing width out */
+}
+
+.app-feedback-link {
+  padding: 6px 12px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #f4f3ec;
+  color: #333;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;  /* keep this on the button — it's short and shouldn't break mid-word */
+  flex-shrink: 0;        /* NEW — keeps the button from getting squashed/clipped as it wraps */
+}
+
+.app-feedback-link:hover {
+  background: #e8e6da;
+  border-color: #999;
+}
+
 /* Three-column layout: editors | diagram | tables. Each column is its own
  * scroll region so a tall register/memory table doesn't push the diagram
  * off-screen. */

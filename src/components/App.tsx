@@ -272,6 +272,17 @@ export function App() {
             </span>
           )}
         </div>
+        <div className="app-feedback-group">
+          <h1 className="app-feedback-link-label">We would appreciate it if you provided your feedback here: </h1>
+          <a
+            className="app-feedback-link"
+            href="https://docs.google.com/forms/d/1ikhZhLoUp3EycgYMbi0k7gV7K92e_o_0SDqBJSIv5eM/edit"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Give Feedback
+          </a>
+        </div>
       </header>
 
       <main className={tablesCollapsed ? "app-main app-main-tables-collapsed" : "app-main"}>
