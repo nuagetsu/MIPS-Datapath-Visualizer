@@ -29,13 +29,19 @@ export interface WireSegment {
   d: string;
   /** Whether this segment should render an arrowhead at its end. */
   arrow: boolean;
+  /** Raw polyline points [x0, y0, x1, y1, ...] — kept alongside `d` so the
+   * pipelined layout (see pipelineSegment below) can re-position and split
+   * the same geometry instead of maintaining a second copy of every wire. */
+  pts?: number[];
+  /** Endpoints [x0, y0, x1, y1] of a loop() connector, for the same reason. */
+  arc?: [number, number, number, number];
 }
 
 function poly(points: number[], arrow: boolean): WireSegment {
   const [x0, y0, ...rest] = points;
   let d = `M ${x0} ${y0}`;
   for (let i = 0; i < rest.length; i += 2) d += ` L ${rest[i]} ${rest[i + 1]}`;
-  return { d, arrow };
+  return { d, arrow, pts: points };
 }
 
 /** A ~180° radius-5 semicircular connector between two points 10 units
@@ -43,7 +49,7 @@ function poly(points: number[], arrow: boolean): WireSegment {
  * Konva.Arc calls rather than reproducing their exact angle/rotation. */
 function loop(x0: number, y0: number, x1: number, y1: number): WireSegment {
   const r = 5;
-  return { d: `M ${x0} ${y0} A ${r} ${r} 0 1 1 ${x1} ${y1}`, arrow: false };
+  return { d: `M ${x0} ${y0} A ${r} ${r} 0 1 1 ${x1} ${y1}`, arrow: false, arc: [x0, y0, x1, y1] };
 }
 
 export const SEGMENTS: Record<string, WireSegment> = {
@@ -218,3 +224,454 @@ export function aluPath(x: number, y: number, w: number, h: number): string {
     "Z",
   ].join(" ");
 }
+// ===========================================================================
+// Pipelined layout
+// ===========================================================================
+/**
+ * Geometry for the "Pipeline" feature toggle: the same diagram with the four
+ * pipeline registers (IF/ID, ID/EX, EX/MEM, MEM/WB) inserted as vertical
+ * bars, placed the way the textbook (Patterson & Hennessy) figure places
+ * them. Like the shift/jump toggles this is presentation-only — nothing
+ * here changes what execStage() computes or which WireIds it lights.
+ *
+ * How space is made for the bars: every ID..WB component and wire point is
+ * assigned to a stage and translated right by that stage's PIPELINE_OFFSET.
+ * Those stages are separated by plain x-boundaries in the original
+ * coordinate space (STAGE_BOUNDS).
+ *
+ * IF gets its own compact layout instead (PIPELINE_IF). In the single-cycle
+ * layout IF is spread across the top (IM at x=15-115, PC at 130, Add1 at
+ * 250-290) with the instruction fields stacked under IM — which can't be
+ * separated by a vertical bar. Here the fields have moved right into ID, so
+ * the space under PC is free: PC and Add1 sit in a narrow row at the top
+ * and IM goes directly under PC, fed from above. IF then ends at x=165
+ * (Add1's right edge) instead of 290, which is what lets ID start at +165
+ * rather than +290 and keeps the whole diagram ~125 units narrower. Every
+ * wire touching IF has explicit pipelined geometry in PIPELINE_OVERRIDES.
+ *
+ * Wires are then split wherever a horizontal run crosses a bar (see
+ * splitAtBars): the piece before the bar ends at its edge with an
+ * arrowhead, and a new piece starts on the far edge — so each wire
+ * visibly goes *into* and *out of* the pipeline register rather than
+ * just passing behind it.
+ */
+
+export type Stage = "IF" | "ID" | "EX" | "MEM" | "WB";
+
+/** Original-space x boundaries: ID | EX at 310 (right after the Register
+ * File and Sign Extend, both ending at x=300, and before the RD1/RD2 hops at
+ * 320-330 — so ID/EX sits close to the Register File, and the sign-extend
+ * fork, the RD2 -> Write Data fork and the branch Left Shift are all in EX,
+ * as in the textbook), EX | MEM at 575 (between
+ * the ALU, x=550, and the RES_ fork, x=600), MEM | WB at 765 (between Data
+ * Memory, x=750, and MUX 3, x=780). Chosen so no component straddles a
+ * boundary and no vertical wire run sits on one. */
+const STAGE_BOUNDS = { EX: 310, MEM: 575, WB: 765 } as const;
+
+/** Horizontal gap opened at each of the ID|EX, EX|MEM, MEM|WB boundaries. */
+const STAGE_GAP = 44;
+
+/** In pipeline mode the whole top row — PC, Add1, Instruction Memory, the
+ * branch adder (Add2), the branch Left Shift, MUX 4/5, the PC return wire
+ * along the very top, and the bars' own tops — moves down by this much,
+ * closing up the gap between it and the Register File / ALU row. The
+ * pipelined viewBox then starts at y=TOP_DY instead of 0, so the diagram is
+ * TOP_DY shorter and the bars are TOP_DY shorter at the top.
+ *
+ * Applied to wires by shiftTop (every point above TOP_SPLIT) and to
+ * components by DatapathDiagram's translations. 30 is set by the tightest
+ * gap it closes: Add2's bottom (125 -> 155) to the ALUctrl label (y=190). */
+const TOP_DY = 30;
+/** Wire points above this y are in the top row. Nothing in the middle or
+ * bottom rows sits above it: the instruction-field column starts at 150,
+ * the Register File / ALU / MEM/WB bar at 200. */
+const TOP_SPLIT = 150;
+export const PIPELINE_TOP_DY = TOP_DY;
+
+/** Compact IF-stage layout, in pipelined coordinates.
+ *   PC   — x=15-55, y=15-75 (its single-cycle x=130, shifted by pcDx)
+ *   Add1 — x=125-165, y=15-75 (its single-cycle x=250, shifted by add1Dx);
+ *          the "4" label/arrow live in the same group and move with it
+ *   IM   — x=25-125, y=150-270, directly under PC. Address enters its top
+ *          edge at x=75 (the PC-output fork), instruction leaves its right
+ *          edge at y=235 (below the two-line title).
+ * The fork at x=75 sits 20 right of PC, and 50 left of Add1 — the same
+ * spacing the single-cycle layout uses between its x=200 fork and Add1 —
+ * so the "4" label keeps the same clearance from the vertical address wire. */
+export const PIPELINE_IF = {
+  pcDx: -115,
+  add1Dx: -125,
+  im: { x: 25, y: 150 + TOP_DY, width: 100, height: 120 },
+  fork: 75,
+  imOutY: 235 + TOP_DY,
+  right: 165,
+} as const;
+
+/** ID's leftmost element, the instruction-field column (x=60), lands 24 past
+ * the IF/ID bar's right edge: IF right (165) + 20 + bar (16) + 24 = 225. */
+const ID_OFFSET = 165;
+
+/** MEM's leading part — the RES_ fork at original x=600 (where the ALU
+ * result splits to Data Memory's address and down towards MUX 3) and its
+ * hop — gets its own offset, putting the fork 25 past EX/MEM's right edge
+ * (814 -> 839), the same stub the other bars leave. Data Memory and the
+ * rest of MEM (x >= MEM_SPLIT) then use PIPELINE_OFFSET.MEM, 20 less, so the
+ * fork-to-Data-Memory run is 30 instead of the single-cycle 50. Together
+ * that pulls Data Memory — and everything right of it — 34 units closer to
+ * EX/MEM than a uniform STAGE_GAP would. */
+const MEM_FORK_OFFSET = ID_OFFSET + 2 * STAGE_GAP - 14;
+const MEM_SPLIT = 625;
+
+export const PIPELINE_OFFSET: Record<Stage, number> = {
+  IF: 0,
+  ID: ID_OFFSET,
+  EX: ID_OFFSET + STAGE_GAP,
+  // MEM is tighter than the other stages, so Data Memory sits close to
+  // EX/MEM: see MEM_FORK_OFFSET below. This offset applies to Data Memory
+  // and everything after it within MEM (original x >= MEM_SPLIT).
+  MEM: MEM_FORK_OFFSET - 20,
+  WB: MEM_FORK_OFFSET - 20 + STAGE_GAP,
+};
+
+/** Pipelined viewBox width: the rightmost wire is LS_MUX5's climb at
+ * LS_UP_X (1153). */
+export const PIPELINE_VIEW_WIDTH = 1165;
+
+export interface PipelineBar {
+  label: string;
+  /** Left edge, in pipelined coordinates. */
+  x: number;
+  width: number;
+  top: number;
+  bottom: number;
+}
+
+const BAR_W = 16;
+/** In pipeline mode everything along the bottom of the single-cycle layout
+ * — WD_'s return run (y=575), the jump shift-left ellipse and its wires
+ * (y=590) — moves down by this much, making room below Sign Extend for the
+ * rt/rd wires that travel through ID/EX to the RegDst mux in EX (see "Write
+ * register path" below). Kept as small as those lanes allow, so the
+ * pipelined diagram is no taller than the single-cycle one.
+ *
+ * The bottom stack, top to bottom: Sign Extend (bottom 515), rt lane 525,
+ * rd lane 545, MUX 1's output 548, bars' bottom 555, WB_WR 568, WD_ 581,
+ * jump ellipse 578-614 (cy 596) with LS_MUX5 along 596 — each 10-13 apart,
+ * the same spacing the single-cycle layout uses between WD_ and the jump
+ * ellipse. */
+const BOTTOM_DY = 6;
+
+/** Pipelined viewBox: starts at y=TOP_DY (the PC return wire, 5 below
+ * that, is the topmost thing drawn) and ends at 622 — the jump ellipse's
+ * bottom lands at 590 + 6 + 18 = 614, and 622 matches the single-cycle
+ * diagram's own bottom margin. */
+export const PIPELINE_VIEW_Y = TOP_DY;
+export const PIPELINE_VIEW_HEIGHT = 622 - TOP_DY;
+
+/** Bars span y=30..555: below the MUX5_PC return wire along y=5 (so the
+ * bar labels fit between the two) and above the two write-back return
+ * wires along the bottom (WB_WR at y=568, WD_ at y=581), so every backward
+ * wire runs around the bars rather than through them, as in the textbook
+ * figure. The lowest wire that has to pass through a bar is MUX 1's output
+ * at y=548. */
+const BAR_TOP = 30 + TOP_DY;
+const BAR_BOTTOM = 555;
+
+/** Centers a bar in the gap opened at original-space boundary `b`. */
+function barAt(label: string, b: number, before: Stage, after: Stage, top = BAR_TOP): PipelineBar {
+  const center = b + (PIPELINE_OFFSET[before] + PIPELINE_OFFSET[after]) / 2;
+  return { label, x: center - BAR_W / 2, width: BAR_W, top, bottom: BAR_BOTTOM };
+}
+
+const IFID_X = PIPELINE_IF.right + 20;
+/** Center of the funct field box's bottom edge, in pipelined coordinates. */
+const JADDR_X = 70 + ID_OFFSET;
+
+export const PIPELINE_BARS: PipelineBar[] = [
+  // IF/ID: between Add1's right edge (165) and the instruction fields' new
+  // left edge (60 + 165 = 225).
+  { label: "IF/ID", x: IFID_X, width: BAR_W, top: BAR_TOP, bottom: BAR_BOTTOM },
+  barAt("ID/EX", STAGE_BOUNDS.EX, "ID", "EX"),
+  // EX/MEM: where a uniform STAGE_GAP would put it (39 past the ALU), but
+  // MEM itself is compressed after it — see MEM_FORK_OFFSET.
+  { label: "EX/MEM", x: STAGE_BOUNDS.MEM + PIPELINE_OFFSET.EX + STAGE_GAP / 2 - BAR_W / 2, width: BAR_W, top: BAR_TOP, bottom: BAR_BOTTOM },
+  // MEM/WB starts below MUX 4's "Branch & isZero?" label, so the PC+4 and
+  // branch-target wires feeding MUX 4 along the top aren't routed through
+  // the write-back register — only the two MUX 3 inputs are.
+  barAt("MEM/WB", STAGE_BOUNDS.WB, "MEM", "WB", 200),
+];
+
+/** Pipelined x-offset of a non-IF wire point, by its original x: its
+ * stage's offset, except MEM's leading fork (see MEM_FORK_OFFSET). */
+function offsetOfX(x: number): number {
+  const stage = stageOfX(x);
+  if (stage === "MEM" && x < MEM_SPLIT) return MEM_FORK_OFFSET;
+  return PIPELINE_OFFSET[stage];
+}
+
+/** Stage of a non-IF point, by its original x. */
+export function stageOfX(x: number): Exclude<Stage, "IF"> {
+  if (x < STAGE_BOUNDS.EX) return "ID";
+  if (x < STAGE_BOUNDS.MEM) return "EX";
+  if (x < STAGE_BOUNDS.WB) return "MEM";
+  return "WB";
+}
+
+/** Segments redrawn from scratch for the pipelined layout, in pipelined
+ * coordinates — every wire with an end in IF, plus JADDR_LS. */
+const { fork, imOutY, im } = PIPELINE_IF;
+const pcCx = 150 + PIPELINE_IF.pcDx; // PC's top-center input, x=35
+const imRight = im.x + im.width;
+const add1Left = 250 + PIPELINE_IF.add1Dx;
+const WB = PIPELINE_OFFSET.WB;
+
+/** MUX 4 / MUX 5 (the PC-select pair along the top) in pipeline mode: moved
+ * left from their WB-stage position to sit 30 past EX/MEM (MUX 4 at
+ * x=844-874, MUX 5 at 904-934, same 60 spacing as before), so the PC+4 and
+ * branch-target wires out of EX/MEM are short. Every wire touching them is
+ * redrawn below using TOP_MUX_X in place of the WB offset. */
+export const PIPELINE_TOP_MUX_DX = 814 + 30 - 780;
+const TM = PIPELINE_TOP_MUX_DX;
+/** LS_MUX5's climb up the right-hand side. It can't come up anywhere left of
+ * WD_'s vertical (850 + WB) without crossing the write-back wires along the
+ * bottom, so it stays at the far right, 40 clear of WD_ as before, then
+ * runs left above MEM/WB (top y=200) into MUX 5's right-hand input. */
+const LS_UP_X = 850 + WB + 40;
+// ---- Write register path (pipeline mode) -----------------------------------
+/**
+ * As in the textbook figure, the write-register number travels with its
+ * instruction: rt and rd both pass through ID/EX to the RegDst mux (MUX 1),
+ * which now sits in EX; its output passes through EX/MEM and MEM/WB, and
+ * PIPELINE_WB_WR carries it from MEM/WB back to the Register File's WR port.
+ * Otherwise WB would write to whatever register the instruction currently
+ * in ID names, not its own.
+ *
+ * In pipelined coordinates:
+ *   - rt lane: taps the rt -> RR2 wire at x=295, drops to y=525, runs right
+ *     under Sign Extend (bottom y=515) through ID/EX into the mux's input 0.
+ *   - rd lane: leaves the rd field (y=395), turns down at x=275 — left of
+ *     the rt lane so the two never cross — to y=545, then the same way into
+ *     input 1.
+ *   - mux: x=640-670, y=515-555 in EX, below _MWD (y=480) and the shamt
+ *     label; RegDst's control tick comes from above since the band below it
+ *     carries WB_WR.
+ *   - output: leaves the mux at its mid-height (y=535), then steps down at
+ *     x=690 to y=548 before running through EX/MEM into MEM/WB — at 535 it
+ *     would run only 10 below _MUX3 (y=525) all the way across MEM; at 548
+ *     it's 23 clear, and still inside the bars (bottom 555).
+ *
+ * Both lanes have to cross the write-back return wires' verticals (WB_WR at
+ * x=320, WD_ at x=350) and IMM_EXT (y=500): unavoidable here, because the
+ * returns come up between the field column and the Register File. Each
+ * crossing gets a hop on the new wire, in the same style as the diagram's
+ * existing _RD1_/_WD_ hops. (Like _WD_, they cross shamt's y=465 run
+ * without a hop.)
+ */
+export const PIPELINE_REGDST_MUX = { x: 640, y: 515, width: 30, height: 40 };
+const RT_LANE_Y = 525;
+const RD_LANE_Y = 545;
+const RT_DOWN_X = 295;
+const RD_DOWN_X = 275;
+const REGDST_OUT_Y = PIPELINE_REGDST_MUX.y + PIPELINE_REGDST_MUX.height / 2; // 535
+const REGDST_STEP_X = 690;
+const REGDST_LANE_Y = 548;
+const WR_UP_X = 155 + PIPELINE_OFFSET.ID; // WB_WR's vertical, x=320
+const WD_UP_X = 185 + PIPELINE_OFFSET.ID; // WD_'s vertical, x=350
+const IMM_Y = 500;
+
+// ---- Branch Left Shift 2-bit (pipeline mode) ------------------------------
+/**
+ * With ID/EX moved up to the Register File, the branch shifter belongs in EX
+ * (after the sign-extended immediate has passed through ID/EX), as in the
+ * textbook. Its single-cycle position (center x=325) would straddle the bar,
+ * so in pipeline mode it moves right and is fed from its left side instead
+ * of its bottom: _LS rises from the sign-extend fork (x=325 -> 534) to the
+ * ellipse's mid-height (y=115) and turns right into its left edge 20 units
+ * later; LS_ADD2 leaves its right edge into Add2's lower input as before.
+ * At x=554-654, y=90-140 it clears the _ADD2 fork's drop (x=609, y=45-75)
+ * above and the ALU/ALUctrl label (y>=190) below.
+ */
+const LS_FORK_X = 325 + PIPELINE_OFFSET.EX;
+export const PIPELINE_BRANCH_LS = { cx: LS_FORK_X + 20 + 50, cy: 115, rx: 50 };
+
+type OverridePart = number[] | { arc: [number, number, number, number] };
+const hop = (x0: number, y0: number, x1: number, y1: number): OverridePart => ({ arc: [x0, y0, x1, y1] });
+
+/** A lane dropping at `downX` from `startY` to `laneY`, then right to the
+ * mux, hopping IMM_EXT on the way down and both return verticals on the way
+ * across. `lead` is any run before the drop. */
+function lane(lead: number[], downX: number, laneY: number): OverridePart[] {
+  const muxX = PIPELINE_REGDST_MUX.x;
+  return [
+    [...lead, downX, IMM_Y - 5],
+    hop(downX, IMM_Y - 5, downX, IMM_Y + 5),
+    [downX, IMM_Y + 5, downX, laneY, WR_UP_X - 5, laneY],
+    hop(WR_UP_X - 5, laneY, WR_UP_X + 5, laneY),
+    [WR_UP_X + 5, laneY, WD_UP_X - 5, laneY],
+    hop(WD_UP_X - 5, laneY, WD_UP_X + 5, laneY),
+    [WD_UP_X + 5, laneY, muxX, laneY],
+  ];
+}
+
+const PIPELINE_OVERRIDES: Record<string, OverridePart[]> = {
+  // PC's output (right edge, y=30) to the fork.
+  PC_: [[170 + PIPELINE_IF.pcDx, 30, fork, 30]],
+  _ADD1: [[fork, 30, add1Left, 30]],
+  // Down from the fork into IM's top edge.
+  _IADDR: [[fork, 30, fork, im.y]],
+  // PC+4, from Add1's output through IF/ID and ID/EX to the fork in EX.
+  ADD1_: [[PIPELINE_IF.right, 45, 400 + PIPELINE_OFFSET.EX, 45]],
+  // IM's output, stepped down (between IM and the bar) to the rd-row height
+  // the field column is fed at, then through IF/ID into the fields.
+  IM_INST: [[imRight, imOutY, imRight + 30, imOutY, imRight + 30, 360, 60 + PIPELINE_OFFSET.ID, 360]],
+  // Return wires into PC's top: same shape as before, just ending at PC's
+  // new x.
+  MUX5_PC: [[870 + TM, 70, 885 + TM, 70, 885 + TM, 5, pcCx, 5, pcCx, 15]],
+  MUX4_PC: [[810 + TM, 70, 850 + TM, 70, 850 + TM, 5, pcCx, 5, pcCx, 15]],
+  // Into / between the relocated top muxes — see PIPELINE_TOP_MUX_DX.
+  _MUX4: [[400 + PIPELINE_OFFSET.EX, 45, 780 + TM, 45]],
+  ADD2_MUX4: [[540 + PIPELINE_OFFSET.EX, 95, 780 + TM, 95]],
+  MUX4_MUX5: [[810 + TM, 70, 825 + TM, 70, 825 + TM, 45, 840 + TM, 45]],
+  // JADDR_LS normally runs left from the rd field along the x=5 bus, which
+  // in pipelined coordinates would fall left of the IF/ID bar. Instead it
+  // leaves the instruction-field column from the bottom of the funct box
+  // (x=60-80 -> 225-245, bottom edge y=570), so it still visibly comes from
+  // the decoded instruction, then drops to the jump shift-left ellipse's
+  // (moved-down) height and runs right into its left edge (110 + 165).
+  JADDR_LS: [[JADDR_X, 570, JADDR_X, 590 + BOTTOM_DY, 110 + PIPELINE_OFFSET.ID, 590 + BOTTOM_DY]],
+  // Branch shifter, now in EX — see PIPELINE_BRANCH_LS.
+  _LS: [[LS_FORK_X, 415, LS_FORK_X, PIPELINE_BRANCH_LS.cy, PIPELINE_BRANCH_LS.cx - PIPELINE_BRANCH_LS.rx, PIPELINE_BRANCH_LS.cy]],
+  LS_ADD2: [[PIPELINE_BRANCH_LS.cx + PIPELINE_BRANCH_LS.rx, PIPELINE_BRANCH_LS.cy, 500 + PIPELINE_OFFSET.EX, 115]],
+  // Bottom-band wires, moved down by BOTTOM_DY.
+  LS_MUX5: [[190 + PIPELINE_OFFSET.ID, 590 + BOTTOM_DY, LS_UP_X, 590 + BOTTOM_DY, LS_UP_X, 100, 870 + TM, 100]],
+  WD_: [[810 + WB, 482.5, 850 + WB, 482.5, 850 + WB, 575 + BOTTOM_DY, WD_UP_X, 575 + BOTTOM_DY, WD_UP_X, 505]],
+  // Write register path — see the section comment above. Keys are the
+  // RegDst wires' own segments, so RT_MUX1 / RD_MUX1 / MUX1_WR light them
+  // exactly as they light MUX 1's wires in the single-cycle layout.
+  _MUX1: lane([RT_DOWN_X, 325], RT_DOWN_X, RT_LANE_Y),
+  RD_MUX1: lane([80 + PIPELINE_OFFSET.ID, 395, RD_DOWN_X, 395], RD_DOWN_X, RD_LANE_Y),
+  MUX1_WR: [
+    [
+      PIPELINE_REGDST_MUX.x + PIPELINE_REGDST_MUX.width, REGDST_OUT_Y,
+      REGDST_STEP_X, REGDST_OUT_Y,
+      REGDST_STEP_X, REGDST_LANE_Y,
+      PIPELINE_BARS[3].x, REGDST_LANE_Y,
+    ],
+  ],
+};
+
+/** Where to put the "inst[25:0]" label in the pipelined layout: a
+ * right-aligned box ending just left of JADDR_LS's short vertical drop,
+ * below the funct box. There's nothing else in that corner — the IF/ID bar
+ * ends at y=555 and WD_'s y=575 return run stops at x=350. */
+export const PIPELINE_JADDR_LABEL = { x: JADDR_X - 64, y: 577, width: 60 };
+
+/** Splits a pipelined-coordinate polyline wherever a horizontal run passes
+ * fully through a bar. Every piece except the last ends at a bar's near
+ * edge with an arrowhead (flowing into the register); the last keeps the
+ * original segment's own arrow setting. All wires in this diagram are
+ * axis-aligned, and no vertical run falls inside a bar's x-range, so only
+ * horizontal runs need checking. */
+function splitAtBars(pts: number[], arrow: boolean): WireSegment[] {
+  const pieces: number[][] = [];
+  let cur = [pts[0], pts[1]];
+  for (let i = 2; i < pts.length; i += 2) {
+    const x0 = pts[i - 2], y0 = pts[i - 1], x1 = pts[i], y1 = pts[i + 1];
+    if (y0 === y1 && x0 !== x1) {
+      const dir = Math.sign(x1 - x0);
+      const lo = Math.min(x0, x1), hi = Math.max(x0, x1);
+      const crossed = PIPELINE_BARS.filter((b) => y0 > b.top && y0 < b.bottom && lo < b.x && hi > b.x + b.width).sort(
+        (a, b) => dir * (a.x - b.x),
+      );
+      for (const b of crossed) {
+        const near = dir > 0 ? b.x : b.x + b.width;
+        const far = dir > 0 ? b.x + b.width : b.x;
+        cur.push(near, y0);
+        pieces.push(cur);
+        cur = [far, y0];
+      }
+    }
+    cur.push(x1, y1);
+  }
+  pieces.push(cur);
+  return pieces.map((p, i) => poly(p, i < pieces.length - 1 ? true : arrow));
+}
+
+/** The pipelined version of one SEGMENTS/LEGACY_SEGMENTS entry: moved into
+ * its stage's position and split into pieces at every bar it crosses.
+ * Every piece keeps the original segment's key for highlighting purposes,
+ * so WIRE_TO_SEGMENTS / activeSegmentKeys work unchanged. */
+/** Moves top-row points down by TOP_DY (see TOP_DY). Runs on every
+ * pipelined point — overrides included, since those are written in the
+ * top row's pre-shift coordinates like everything else — before the bar
+ * split, which compares against the bars' already-shifted tops. Wires that
+ * span both rows (e.g. _LS rising from the sign-extend fork, LS_MUX5
+ * climbing the right-hand side) are all vertical where they cross
+ * TOP_SPLIT, so moving only their top-row points just lengthens them. */
+function shiftTop(pts: number[]): number[] {
+  return pts.map((v, i) => (i % 2 === 1 && v < TOP_SPLIT ? v + TOP_DY : v));
+}
+
+export function pipelineSegment(key: string, seg: WireSegment): WireSegment[] {
+  const override = PIPELINE_OVERRIDES[key];
+  if (override) {
+    // Only the last part carries the segment's own arrowhead; polyline parts
+    // are still split at any bars they cross (adding arrows into the bars).
+    return override.flatMap((part, i) => {
+      if (!Array.isArray(part)) {
+        const [x0, y0, x1, y1] = shiftTop(part.arc);
+        return [loop(x0, y0, x1, y1)];
+      }
+      return splitAtBars(shiftTop(part), i === override.length - 1 ? seg.arrow : false);
+    });
+  }
+
+  if (seg.arc) {
+    const [x0, y0, x1, y1] = seg.arc;
+    const o = offsetOfX(x0);
+    const [sx0, sy0, sx1, sy1] = shiftTop([x0 + o, y0, x1 + o, y1]);
+    return [loop(sx0, sy0, sx1, sy1)];
+  }
+
+  if (!seg.pts) return [seg];
+  const pts = seg.pts.slice();
+  for (let i = 0; i < pts.length; i += 2) pts[i] += offsetOfX(pts[i]);
+  return splitAtBars(shiftTop(pts), seg.arrow);
+}
+
+// ---- Write register, from MEM/WB back to WR (pipeline mode only) ----------
+/**
+ * The last leg of the write register path (see the section comment on
+ * PIPELINE_REGDST_MUX above): the register number latched in MEM/WB, back
+ * to WR (365, 375). Out of the bottom of the MEM/WB bar, left along y=568
+ * (between the bars' bottom at 555 and WD_'s return run at 581), up at
+ * x=320 and into WR.
+ *
+ * It has to cross WD_ once: WR is the *upper* register-file port, so its
+ * wire must turn up left of WD_'s vertical (x=350) — but on the right it
+ * starts left of WD_'s source (MEM/WB vs. MUX 3), so it's the inner wire
+ * along the bottom. A hop marks that crossing, and a second hop marks its
+ * crossing of IMM_EXT (y=500) the same way WD_ already does with _WD_. (It
+ * crosses the rt/rd lanes too, but those carry the hops.)
+ *
+ * Not a real WireId (execStage never lights it directly): DatapathDiagram
+ * lights it whenever MUX3_WD is lit, i.e. during write-back, which is when
+ * the register number is actually used.
+ */
+const memWb = PIPELINE_BARS[3];
+const WB_X = memWb.x + memWb.width / 2;
+const WB_Y = 562 + BOTTOM_DY;
+const WR_PORT_X = 200 + PIPELINE_OFFSET.ID; // Register File's left edge
+const WR_PORT_Y = 375;
+
+export const PIPELINE_WB_WR: WireSegment[] = [
+  poly([WB_X, memWb.bottom, WB_X, WB_Y, WD_UP_X + 5, WB_Y], false),
+  loop(WD_UP_X - 5, WB_Y, WD_UP_X + 5, WB_Y),
+  poly([WD_UP_X - 5, WB_Y, WR_UP_X, WB_Y, WR_UP_X, IMM_Y + 5], false),
+  loop(WR_UP_X, IMM_Y + 5, WR_UP_X, IMM_Y - 5),
+  poly([WR_UP_X, IMM_Y - 5, WR_UP_X, WR_PORT_Y, WR_PORT_X, WR_PORT_Y], true),
+];
+
+/** How far the bottom band (jump shift-left ellipse etc.) moves down in
+ * pipeline mode — for DatapathDiagram's component placement. */
+export const PIPELINE_BOTTOM_DY = BOTTOM_DY;

@@ -121,6 +121,11 @@ export function App() {
   // history, including re-rendering past steps correctly.
   const [showShift, setShowShift] = useState(true);
   const [showJump, setShowJump] = useState(true);
+  // Same idea for the pipeline-register bars (IF/ID, ID/EX, EX/MEM,
+  // MEM/WB). Off by default so the single-cycle diagram stays the
+  // out-of-the-box view. Also purely visual for now: execution is still
+  // one instruction at a time through F/D/A/M/R.
+  const [showPipeline, setShowPipeline] = useState(false);
   const dispContainerRef = useRef<HTMLDivElement>(null);
   const consContainerRef = useRef<HTMLDivElement>(null);
   const dispEditor = useAceEditor(dispContainerRef, { mode: "ace/mode/mips", pcNum: true, write: false });
@@ -272,7 +277,7 @@ export function App() {
             </span>
           )}
         </div>
-        <div className="app-feedback-group">
+        {/* <div className="app-feedback-group">
           <h1 className="app-feedback-link-label">We would appreciate it if you provided your feedback here: </h1>
           <a
             className="app-feedback-link"
@@ -282,7 +287,7 @@ export function App() {
           >
             Give Feedback
           </a>
-        </div>
+        </div> */}
       </header>
 
       <main className={tablesCollapsed ? "app-main app-main-tables-collapsed" : "app-main"}>
@@ -316,12 +321,20 @@ export function App() {
             >
               Toggle Jump
             </button>
+            <button
+              className={showPipeline ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
+              onClick={() => setShowPipeline((p) => !p)}
+              aria-pressed={showPipeline}
+              title={showPipeline ? "Hide pipeline registers" : "Show pipeline registers"}
+            >
+              Toggle Pipeline
+            </button>
           </div>
           <div className="app-diagram">
             <DatapathDiagram
               activeWires={machine.current?.activeWires ?? []}
               state={machine.current}
-              features={{ shift: showShift, jump: showJump }}
+              features={{ shift: showShift, jump: showJump, pipeline: showPipeline }}
             />
           </div>
         </section>

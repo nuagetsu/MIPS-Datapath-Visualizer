@@ -74,3 +74,10 @@
 .dp-arrowhead-blue {
   fill: #2c5aa0;
 }
+/* ---- Pipeline registers (IF/ID, ID/EX, EX/MEM, MEM/WB) ----
+ * Only rendered when the "Pipeline" toggle is on. With it on the viewBox
+ * widens from 900 to 1320 (PIPELINE_VIEW_WIDTH in datapathWires.ts) — the
+ * sizing rules above already scale the drawing to fit either way. */
+.dp-pipeline-bar {
+  fill: #c9d3e0;
+}

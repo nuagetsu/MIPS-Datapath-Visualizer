@@ -47,7 +47,27 @@
 import type { Int32Bits } from "../lib/Numbers/int32";
 import * as bit from "../lib/Numbers/bit";
 import type { WireId } from "../lib/mips-machine/datapath";
-import { SEGMENTS, LEGACY_SEGMENTS, aluPath, activeSegmentKeys } from "../lib/mips-machine/datapathWires";
+import {
+  SEGMENTS,
+  LEGACY_SEGMENTS,
+  aluPath,
+  activeSegmentKeys,
+  pipelineSegment,
+  PIPELINE_BARS,
+  PIPELINE_OFFSET,
+  PIPELINE_VIEW_WIDTH,
+  PIPELINE_JADDR_LABEL,
+  PIPELINE_IF,
+  PIPELINE_WB_WR,
+  PIPELINE_REGDST_MUX,
+  PIPELINE_VIEW_HEIGHT,
+  PIPELINE_BOTTOM_DY,
+  PIPELINE_BRANCH_LS,
+  PIPELINE_TOP_MUX_DX,
+  PIPELINE_TOP_DY,
+  PIPELINE_VIEW_Y,
+  type Stage,
+} from "../lib/mips-machine/datapathWires";
 import type { MachineState } from "../lib/mips-machine/machineState";
 import "./DatapathDiagram.css";
 
@@ -61,6 +81,10 @@ import "./DatapathDiagram.css";
 export interface DatapathFeatures {
   shift?: boolean;
   jump?: boolean;
+  /** Insert the IF/ID, ID/EX, EX/MEM, MEM/WB pipeline-register bars,
+   * spreading the stages apart to make room (see the "Pipelined layout"
+   * section of datapathWires.ts). Defaults to false. */
+  pipeline?: boolean;
 }
 
 export interface DatapathDiagramProps {
@@ -142,6 +166,20 @@ function CtrlTick({ x, y1, y2 }: { x: number; y1: number; y2: number }) {
 export function DatapathDiagram({ activeWires, state, features }: DatapathDiagramProps) {
   const shift = features?.shift ?? true;
   const jump = features?.jump ?? true;
+  const pipeline = features?.pipeline ?? false;
+
+  // Per-stage horizontal shift for component groups. All zero when
+  // pipelining is off, so the single-cycle layout is exactly as before.
+  const stageShift = (stage: Stage) => (pipeline ? `translate(${PIPELINE_OFFSET[stage]} 0)` : undefined);
+  const viewWidth = pipeline ? PIPELINE_VIEW_WIDTH : 900;
+  const viewHeight = pipeline ? PIPELINE_VIEW_HEIGHT : 620;
+  const regDstMux = PIPELINE_REGDST_MUX;
+  // MUX 4 / MUX 5 move left to just after EX/MEM in pipeline mode.
+  const topMuxShift = pipeline ? `translate(${PIPELINE_TOP_MUX_DX} ${PIPELINE_TOP_DY})` : undefined;
+  const viewY = pipeline ? PIPELINE_VIEW_Y : 0;
+  // Top-row components (PC, Add1) — also moved down by PIPELINE_TOP_DY.
+  const ifShift = (dx: number) => (pipeline ? `translate(${dx} ${PIPELINE_TOP_DY})` : undefined);
+  const im = PIPELINE_IF.im;
 
   // Remap SHAMT_ALU2 -> MUX2_ALU2 before computing active segments, so
   // turning the "Shift" toggle off makes a shift micro-step light the
@@ -166,6 +204,9 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
   const hiddenSegments = new Set<string>();
   if (!shift) hiddenSegments.add("SHAMT_ALU2");
   if (!jump) ["MUX4_MUX5", "JADDR_LS", "LS_MUX5", "MUX5_PC"].forEach((k) => hiddenSegments.add(k));
+  // Pipeline mode's MEM/WB -> WR wire (see PIPELINE_WB_WR in
+  // datapathWires.ts) lights during write-back, alongside WD.
+  const wbWrActive = activeWires.includes("MUX3_WD");
   const segmentsToRender = jump ? SEGMENTS : { ...SEGMENTS, ...LEGACY_SEGMENTS };
 
   const inst = state?.inst ?? null;
@@ -180,7 +221,7 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
   ];
 
   return (
-    <svg className="datapath-diagram" viewBox="0 0 900 620" xmlns="http://www.w3.org/2000/svg">
+    <svg className="datapath-diagram" viewBox={`0 ${viewY} ${viewWidth} ${viewHeight}`} xmlns="http://www.w3.org/2000/svg">
       <defs>
         <marker id="dp-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" className="dp-arrowhead" />
@@ -197,39 +238,86 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
       <g className="dp-wires">
         {Object.entries(segmentsToRender)
           .filter(([key]) => !hiddenSegments.has(key))
-          .map(([key, seg]) => {
+          .flatMap(([key, seg]) => {
             const isActive = active.has(key);
-            return (
+            // In pipeline mode one segment can become several pieces (split
+            // at each bar it crosses); they all share the segment's key for
+            // highlighting, so a lit wire lights on both sides of a bar.
+            const pieces = pipeline ? pipelineSegment(key, seg) : [seg];
+            return pieces.map((piece, i) => (
               <path
-                key={key}
-                d={seg.d}
+                key={`${key}-${i}`}
+                d={piece.d}
                 className={isActive ? "dp-wire dp-wire-active" : "dp-wire"}
-                markerEnd={seg.arrow ? `url(#${isActive ? "dp-arrow-active" : "dp-arrow"})` : undefined}
+                markerEnd={piece.arrow ? `url(#${isActive ? "dp-arrow-active" : "dp-arrow"})` : undefined}
               />
-            );
+            ));
           })}
+        {pipeline &&
+          PIPELINE_WB_WR.map((piece, i) => (
+            <path
+              key={`WB_WR-${i}`}
+              d={piece.d}
+              className={wbWrActive ? "dp-wire dp-wire-active" : "dp-wire"}
+              markerEnd={piece.arrow ? `url(#${wbWrActive ? "dp-arrow-active" : "dp-arrow"})` : undefined}
+            />
+          ))}
       </g>
+
+      {/* ---- Pipeline registers ---- */}
+      {/* Drawn after the wires so each bar sits on top of them; the wires
+      themselves are already split at the bar edges (pipelineSegment), so
+      every wire visibly ends in an arrow into a bar and restarts out of it. */}
+      {pipeline && (
+        <g className="dp-pipeline-bars">
+          {PIPELINE_BARS.map((b) => (
+            <g key={b.label}>
+              <rect x={b.x} y={b.top} width={b.width} height={b.bottom - b.top} className="dp-box dp-pipeline-bar" />
+              <KonvaLabel
+                spec={{ text: b.label, x: b.x - 30, y: b.top - 17, width: b.width + 60, height: 14, align: "center", bold: true, fontSize: 11 }}
+              />
+            </g>
+          ))}
+        </g>
+      )}
 
       {/* ---- Instruction Memory ---- */}
-      <g>
-        <rect x={15} y={15} width={100} height={120} className="dp-box" fill="#e8e5bb" />
-        <KonvaLabels
-          specs={[
-            { text: "Instruction Memory", x: 20, y: 20, width: 90, height: 30, align: "center", bold: true, fill: "#c0392b" },
-            { text: "Instruction", x: 20, y: 70, width: 90, height: 30, align: "left" },
-            { text: "Address", x: 20, y: 110, width: 90, height: 30, align: "right" },
-          ]}
-        />
-      </g>
+      {/* In pipeline mode IM sits directly under PC (see PIPELINE_IF in
+      datapathWires.ts): the address arrives from above, so "Address" moves
+      to the top edge, and the instruction leaves the right edge toward
+      IF/ID, so "Instruction" moves to the right at that wire's height. */}
+      {pipeline ? (
+        <g>
+          <rect x={im.x} y={im.y} width={im.width} height={im.height} className="dp-box" fill="#e8e5bb" />
+          <KonvaLabels
+            specs={[
+              { text: "Address", x: im.x + 5, y: im.y + 5, width: im.width - 10, height: 20, align: "center" },
+              { text: "Instruction\nMemory", x: im.x + 5, y: im.y + 30, width: im.width - 10, height: 30, align: "center", bold: true, fill: "#c0392b" },
+              { text: "Instruction", x: im.x + 5, y: PIPELINE_IF.imOutY - 10, width: im.width - 10, height: 20, align: "right", vAlign: "middle" },
+            ]}
+          />
+        </g>
+      ) : (
+        <g>
+          <rect x={15} y={15} width={100} height={120} className="dp-box" fill="#e8e5bb" />
+          <KonvaLabels
+            specs={[
+              { text: "Instruction Memory", x: 20, y: 20, width: 90, height: 30, align: "center", bold: true, fill: "#c0392b" },
+              { text: "Instruction", x: 20, y: 70, width: 90, height: 30, align: "left" },
+              { text: "Address", x: 20, y: 110, width: 90, height: 30, align: "right" },
+            ]}
+          />
+        </g>
+      )}
 
       {/* ---- PC ---- */}
-      <g>
+      <g transform={ifShift(PIPELINE_IF.pcDx)}>
         <rect x={130} y={15} width={40} height={60} className="dp-box" fill="#d7dce2" />
         <KonvaLabel spec={{ text: "PC", x: 135, y: 20, width: 30, height: 50, align: "center", vAlign: "middle", bold: true }} />
       </g>
 
       {/* ---- Instruction fields — rotated boxes, see header comment ---- */}
-      <g className="dp-inst-fields">
+      <g className="dp-inst-fields" transform={stageShift("ID")}>
         {fieldRows.map((f) => (
           <g key={f.name}>
             <rect x={60} y={f.y} width={20} height={70} className="dp-box-thin" fill="white" />
@@ -253,7 +341,7 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
       </g>
 
       {/* ---- Register File ---- */}
-      <g>
+      <g transform={stageShift("ID")}>
         <rect x={200} y={200} width={100} height={230} className="dp-box" fill="#ffffcc" />
         <KonvaLabels
           specs={[
@@ -272,13 +360,13 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
 
       {/* ---- Sign Extend ---- */}
       {/* Ellipse x/y is its CENTER (see header comment) — was cx=300 cy=515 before, wrong. */}
-      <g>
+      <g transform={stageShift("ID")}>
         <ellipse cx={250} cy={500} rx={50} ry={15} className="dp-box" fill="#f2f2f2" />
         <KonvaLabel spec={{ text: "Sign Extend", x: 205, y: 485, width: 90, height: 30, align: "center", vAlign: "middle", bold: true }} />
       </g>
 
       {/* ---- ALU ---- */}
-      <g>
+      <g transform={stageShift("EX")}>
         <path d={aluPath(450, 200, 100, 230)} className="dp-box" fill="white" />
         <KonvaLabels
           specs={[
@@ -303,7 +391,7 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
       </g>
 
       {/* ---- Data Memory ---- */}
-      <g>
+      <g transform={stageShift("MEM")}>
         <rect x={650} y={300} width={100} height={200} className="dp-box" fill="#e1ffc4" />
         <KonvaLabels
           specs={[
@@ -321,7 +409,10 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
 
       {/* ---- Left Shift 2-bit ---- */}
       {/* Ellipse x/y is its CENTER — was cx=375 cy=140 before, wrong. */}
-      <g>
+      {/* Pipeline mode: moved into EX, after ID/EX — see PIPELINE_BRANCH_LS in
+      datapathWires.ts. Same ellipse, just translated from its original
+      center (325, 115). */}
+      <g transform={pipeline ? `translate(${PIPELINE_BRANCH_LS.cx - 325} ${PIPELINE_BRANCH_LS.cy - 115 + PIPELINE_TOP_DY})` : undefined}>
         <ellipse cx={325} cy={115} rx={50} ry={25} className="dp-box" fill="#f2f2f2" />
         <KonvaLabel spec={{ text: "Left Shift\n2-bit", x: 275, y: 90, width: 100, height: 50, align: "center", vAlign: "middle", bold: true }} />
       </g>
@@ -331,7 +422,7 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
       (and the "4" input arrow) sit clearly apart from the PC->Instruction-
       Address vertical line at x=200 — at the old position they were only
       20px apart, which read as the same line kinking into the "4" arrow. */}
-      <g>
+      <g transform={ifShift(PIPELINE_IF.add1Dx)}>
         <path d={aluPath(250, 15, 40, 60)} className="dp-box" fill="white" />
         <KonvaLabels
           specs={[
@@ -347,25 +438,42 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
       </g>
 
       {/* ---- Add2 (branch target) ---- */}
-      <g>
+      <g transform={pipeline ? `translate(${PIPELINE_OFFSET.EX} ${PIPELINE_TOP_DY})` : undefined}>
         <path d={aluPath(500, 65, 40, 60)} className="dp-box" fill="white" />
         <KonvaLabel spec={{ text: "Add", x: 505, y: 65, width: 40, height: 60, align: "center", vAlign: "middle", bold: true, fill: "#c0392b" }} />
       </g>
 
       {/* ---- MUX 1 (RegDst) ---- */}
-      <g>
-        <rect x={130} y={340} width={30} height={70} rx={7.5} className="dp-box" fill="#f2f2f2" />
-        <KonvaLabels
-          specs={[
-            { text: "MUX 1", x: 130, y: 340, width: 30, height: 70, align: "center", vAlign: "middle", bold: true },
-            { text: "RegDst", x: 110, y: 415, width: 70, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
-          ]}
-        />
-        <CtrlTick x={145} y1={410} y2={420} />
-      </g>
+      {/* In pipeline mode the RegDst mux sits in EX, after ID/EX, as in the
+      textbook figure (see PIPELINE_REGDST_MUX in datapathWires.ts). Its
+      control tick comes from above there, since the band below it carries
+      the MEM/WB -> WR return wire. */}
+      {pipeline ? (
+        <g>
+          <rect x={regDstMux.x} y={regDstMux.y} width={regDstMux.width} height={regDstMux.height} rx={7.5} className="dp-box" fill="#f2f2f2" />
+          <KonvaLabels
+            specs={[
+              { text: "MUX 1", x: regDstMux.x, y: regDstMux.y, width: regDstMux.width, height: regDstMux.height, align: "center", vAlign: "middle", bold: true },
+              { text: "RegDst", x: regDstMux.x - 20, y: regDstMux.y - 27, width: regDstMux.width + 40, height: 16, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
+            ]}
+          />
+          <CtrlTick x={regDstMux.x + regDstMux.width / 2} y1={regDstMux.y - 10} y2={regDstMux.y} />
+        </g>
+      ) : (
+        <g transform={stageShift("ID")}>
+          <rect x={130} y={340} width={30} height={70} rx={7.5} className="dp-box" fill="#f2f2f2" />
+          <KonvaLabels
+            specs={[
+              { text: "MUX 1", x: 130, y: 340, width: 30, height: 70, align: "center", vAlign: "middle", bold: true },
+              { text: "RegDst", x: 110, y: 415, width: 70, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
+            ]}
+          />
+          <CtrlTick x={145} y1={410} y2={420} />
+        </g>
+      )}
 
       {/* ---- MUX 2 (ALUSrc) ---- */}
-      <g>
+      <g transform={stageShift("EX")}>
         <rect x={390} y={355} width={30} height={75} rx={7.5} className="dp-box" fill="#f2f2f2" />
         <KonvaLabels
           specs={[
@@ -377,7 +485,7 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
       </g>
 
       {/* ---- MUX 3 (MemToReg) ---- */}
-      <g>
+      <g transform={stageShift("WB")}>
         <rect x={780} y={430} width={30} height={110} rx={7.5} className="dp-box" fill="#f2f2f2" />
         <KonvaLabels
           specs={[
@@ -389,7 +497,7 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
       </g>
 
       {/* ---- MUX 4 (Branch) ---- */}
-      <g>
+      <g transform={topMuxShift}>
         <rect x={780} y={25} width={30} height={90} rx={7.5} className="dp-box" fill="#f2f2f2" />
         <KonvaLabels
           specs={[
@@ -412,7 +520,7 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
       share the right side instead of following MUX 4's left-in/right-out
       convention (a real gap-from-WD_ concern, not just taste). */}
       {jump && (
-        <g>
+        <g transform={topMuxShift}>
           <rect x={840} y={25} width={30} height={90} rx={7.5} className="dp-box" fill="#f2f2f2" />
           <KonvaLabel spec={{ text: "MUX 5", x: 840, y: 25, width: 30, height: 90, align: "center", vAlign: "middle", bold: true }} />
           <CtrlTick x={855} y1={115} y2={125} />
@@ -432,7 +540,7 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
       datapathWires.ts (poly(...,110,590) / poly(190,590,...)) — cx/rx are
       unchanged (110/190 = 150∓40), only the vertical position moved. */}
       {jump && (
-        <g>
+        <g transform={pipeline ? `translate(${PIPELINE_OFFSET.ID} ${PIPELINE_BOTTOM_DY})` : undefined}>
           <ellipse cx={150} cy={590} rx={40} ry={18} className="dp-box" fill="#f2f2f2" />
           <KonvaLabel spec={{ text: "Left Shift\n2-bit", x: 110, y: 572, width: 80, height: 36, align: "center", vAlign: "middle", bold: true }} />
         </g>
@@ -443,10 +551,18 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
       raw 26-bit jump index straight out of the fetched instruction word,
       not anything decoded via the rd/shamt/funct field boxes it happens
       to run past. Positioned directly beneath that segment. */}
-      {jump && <KonvaLabel spec={{ text: "inst[25:0]", x: 5, y: 374, width: 60, height: 14, align: "left", fontSize: 10 }} />}
+      {jump && (
+        <KonvaLabel
+          spec={
+            pipeline
+              ? { text: "inst[25:0]", x: PIPELINE_JADDR_LABEL.x, y: PIPELINE_JADDR_LABEL.y, width: PIPELINE_JADDR_LABEL.width, height: 14, align: "right", fontSize: 10 }
+              : { text: "inst[25:0]", x: 5, y: 374, width: 60, height: 14, align: "left", fontSize: 10 }
+          }
+        />
+      )}
 
       {state?.error && (
-        <text x={450} y={575} className="dp-error" textAnchor="middle">
+        <text x={viewWidth / 2} y={pipeline ? PIPELINE_VIEW_Y + PIPELINE_VIEW_HEIGHT - 4 : 575} className="dp-error" textAnchor="middle">
           {state.error}
         </text>
       )}
