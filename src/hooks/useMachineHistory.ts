@@ -18,6 +18,13 @@
  * and writes stay visually highlighted for free — this hook doesn't need
  * to duplicate that.
  *
+ * Pipeline mode (`pipeline` = true): step() runs one clock cycle of a
+ * five-stage pipeline instead of one micro-step of one instruction — see
+ * pipeline.ts, which does the work; this hook just applies each cycle's
+ * reported effects to the banks, the same way it commits execStage()'s.
+ * Switching modes mid-run isn't meaningful (a half-executed instruction
+ * has no pipelined equivalent), so callers should reset() when toggling.
+ *
  * NOTE on reset(): mirrors mips.js's RES() exactly — it clears this hook's
  * own bookkeeping (pc/stage/vals/history) but does NOT zero register or
  * memory values, since RES() in the original never did either (it only
@@ -30,6 +37,7 @@ import type { RegisterBank } from "./useRegisterBank";
 import type { MemoryBank } from "./useMemoryBank";
 import { canRun, execStage, type ProgramLine } from "../lib/mips-machine/interpreter";
 import type { CycleStage, MachineState, ValsSnapshot } from "../lib/mips-machine/machineState";
+import { PipelineEngine, type CycleResult, type PipelineSlotView } from "../lib/mips-machine/pipeline";
 
 const STAGES: CycleStage[] = ["F", "D", "A", "M", "R"];
 
@@ -40,21 +48,85 @@ export interface MachineHistory {
   current: MachineState | null;
   /** False once the program has run off the end or hit an error. */
   canStep: boolean;
-  /** Runs exactly one F/D/A/M/R micro-step and appends it to history. */
+  /** Pipeline mode only: the instructions in flight this cycle, one per
+   * occupied stage. Empty in single-cycle mode and before the first step.
+   * In pipeline mode `current` is a one-state summary of the same cycle
+   * (see pipeline.ts's CycleResult.summary). */
+  pipelineSlots: PipelineSlotView[];
+  /** Runs exactly one F/D/A/M/R micro-step (pipeline mode: one clock
+   * cycle) and appends it to history. */
   step: () => void;
   /** Clears history/pc/stage/vals (see the NOTE above — does not touch
    * register/memory values). */
   reset: () => void;
 }
 
-export function useMachineHistory(program: ProgramLine[], regBank: RegisterBank, memBank: MemoryBank): MachineHistory {
+export function useMachineHistory(
+  program: ProgramLine[],
+  regBank: RegisterBank,
+  memBank: MemoryBank,
+  pipeline = false,
+): MachineHistory {
   const pcRef = useRef(0); // pcRef is just the index for programLine array, not the byte addressing of the pc
   const stageIdxRef = useRef(0);
   const valsRef = useRef<ValsSnapshot>({});
   const haltedRef = useRef(false);
   const [history, setHistory] = useState<MachineState[]>([]);
+  // Pipeline mode: created on the first step after a reset(), so it always
+  // runs the current program.
+  const engineRef = useRef<PipelineEngine | null>(null);
+  const [pipelineSlots, setPipelineSlots] = useState<PipelineSlotView[]>([]);
 
-  const step = useCallback((): void => {
+  const stepPipeline = useCallback((): void => {
+    if (haltedRef.current) return;
+    if (!engineRef.current) {
+      engineRef.current = new PipelineEngine(program, {
+        peekReg: regBank.peek,
+        peekWord: memBank.peekWord,
+        memSize: memBank.size,
+      });
+    }
+    const result: CycleResult | null = engineRef.current.step();
+    if (!result) {
+      haltedRef.current = true;
+      return;
+    }
+
+    regBank.RES();
+    memBank.RES();
+
+    // Reads first (they only mark), then writes — so a register written in
+    // write-back and read in Decode in the same cycle shows as written.
+    // Values were already taken by pipeline.ts's look-ahead; a read that
+    // fails here is one whose stage already carries the error.
+    const { effects } = result;
+    for (const name of effects.regReads) regBank.RR(name);
+    for (const { addr, byte } of effects.memReads) {
+      try {
+        if (byte) memBank.lb(addr);
+        else memBank.lw(addr);
+      } catch {
+        /* reported via the stage's own error */
+      }
+    }
+    let error = result.error;
+    try {
+      for (const w of effects.memWrites) {
+        if (w.byte) memBank.sb(w.addr, w.value);
+        else memBank.sw(w.addr, w.value);
+      }
+      for (const w of effects.regWrites) regBank.WR(w.name, w.value);
+      if (effects.pc) regBank.WR("pc", effects.pc);
+    } catch (err) {
+      error = error ?? (err instanceof Error ? err.message : String(err));
+    }
+
+    setPipelineSlots(result.slots);
+    setHistory((prev) => [...prev, { ...result.summary, error }]);
+    if (error) haltedRef.current = true;
+  }, [program, regBank, memBank]);
+
+  const stepSingle = useCallback((): void => {
     if (haltedRef.current || !canRun(program, pcRef.current)) {
       haltedRef.current = true;
       return;
@@ -106,11 +178,15 @@ export function useMachineHistory(program: ProgramLine[], regBank: RegisterBank,
     }
   }, [program, regBank, memBank]);
 
+  const step = pipeline ? stepPipeline : stepSingle;
+
   const reset = useCallback((): void => {
     pcRef.current = 0;
     stageIdxRef.current = 0;
     valsRef.current = {};
     haltedRef.current = false;
+    engineRef.current = null;
+    setPipelineSlots([]);
     setHistory([]);
     regBank.WR("pc", int32.num(0));
   }, [regBank]);
@@ -118,7 +194,14 @@ export function useMachineHistory(program: ProgramLine[], regBank: RegisterBank,
   return {
     history,
     current: history.length > 0 ? history[history.length - 1] : null,
-    canStep: !haltedRef.current && canRun(program, pcRef.current),
+    pipelineSlots,
+    canStep:
+      !haltedRef.current &&
+      (pipeline
+        ? engineRef.current
+          ? engineRef.current.canStep()
+          : canRun(program, 0)
+        : canRun(program, pcRef.current)),
     step,
     reset,
   };

@@ -30,7 +30,7 @@ import { RegisterTable } from "./RegisterTable";
 import { MemoryTable } from "./MemoryTable";
 import { ValsTable } from "./ValsTable";
 import { ControlTable } from "./ControlTable";
-import { DatapathDiagram } from "./DatapathDiagram";
+import { DatapathDiagram, PIPELINE_WIRE_COLOURS } from "./DatapathDiagram";
 import { parseMips } from "../lib/mips-parser";
 import mipsUtil, { check, assemble } from "../lib/mips-parser/mips-util";
 import { int32 } from "../lib/Numbers/int32";
@@ -121,10 +121,12 @@ export function App() {
   // history, including re-rendering past steps correctly.
   const [showShift, setShowShift] = useState(true);
   const [showJump, setShowJump] = useState(true);
-  // Same idea for the pipeline-register bars (IF/ID, ID/EX, EX/MEM,
-  // MEM/WB). Off by default so the single-cycle diagram stays the
-  // out-of-the-box view. Also purely visual for now: execution is still
-  // one instruction at a time through F/D/A/M/R.
+  // Pipeline mode: draws the pipeline-register bars (IF/ID, ID/EX, EX/MEM,
+  // MEM/WB) AND switches execution to pipelined — each Step is one clock
+  // cycle with up to five instructions in flight, each drawn in its own
+  // colour (see pipeline.ts). Program results are the same in both modes.
+  // Off by default so the single-cycle diagram stays the out-of-the-box
+  // view.
   const [showPipeline, setShowPipeline] = useState(false);
   const dispContainerRef = useRef<HTMLDivElement>(null);
   const consContainerRef = useRef<HTMLDivElement>(null);
@@ -141,13 +143,13 @@ export function App() {
   const memBank = useMemoryBank(256);
   const ctrlBank = useCtrlBank();
   const valsBank = useValsBank();
-  const machine = useMachineHistory(program, regBank, memBank);
+  const machine = useMachineHistory(program, regBank, memBank, showPipeline);
 
   // keep the latest copies in a ref, updated unconditionally
   // every render (not inside an effect), and have effects read from the
   // ref instead of depending on the object directly.
-  const actionsRef = useRef({ codeEditor, dispEditor, consEditor, valsBank, ctrlBank, step: machine.step, programSourceLines });
-  actionsRef.current = { codeEditor, dispEditor, consEditor, valsBank, ctrlBank, step: machine.step, programSourceLines };
+  const actionsRef = useRef({ codeEditor, dispEditor, consEditor, valsBank, ctrlBank, step: machine.step, programSourceLines, pipelineSlots: machine.pipelineSlots });
+  actionsRef.current = { codeEditor, dispEditor, consEditor, valsBank, ctrlBank, step: machine.step, programSourceLines, pipelineSlots: machine.pipelineSlots };
 
   // ---- Parse / assemble --------------------------------------------------
   const handleParse = useCallback(() => {
@@ -210,16 +212,38 @@ export function App() {
   // ---- Mirror every new MachineState out to the editors + tables --------
   useEffect(() => {
     const state = machine.current;
-    const { codeEditor, consEditor, valsBank, ctrlBank, programSourceLines } = actionsRef.current;
+    const { codeEditor, consEditor, valsBank, ctrlBank, programSourceLines, pipelineSlots } = actionsRef.current;
  
     ctrlBank.RES();
     valsBank.RES();
  
+    // Before the first step (e.g. right after a reset or a mode switch),
+    // clear any pipeline dots left from the previous run.
+    if (!state) codeEditor?.markColours([]);
     if (!state || !codeEditor || !consEditor) return;
     
     const editorLine = programSourceLines[state.pc] ?? state.pc; // keep track of line numbers disregarding labels
-    codeEditor.mark(editorLine); // mark gutter of curr instr w red dot
-    codeEditor.next(state.stage === "R" ? editorLine : -1);
+    if (pipelineSlots.length > 0) {
+      // Pipeline mode: a dot per instruction in flight, in the same colour
+      // as its wires, instead of the single red dot.
+      codeEditor.mark(-1);
+      codeEditor.markColours(
+        [...pipelineSlots]
+          .sort((a, b) => a.seq - b.seq)
+          .map((s) => ({
+            line: programSourceLines[s.pc] ?? s.pc,
+            colour: PIPELINE_WIRE_COLOURS[s.seq % PIPELINE_WIRE_COLOURS.length],
+          })),
+      );
+      // As in single-cycle mode's R step: highlight the instruction
+      // completing write-back this cycle, if there is one.
+      const wb = pipelineSlots.find((s) => s.stage === "R");
+      codeEditor.next(wb ? (programSourceLines[wb.pc] ?? wb.pc) : -1);
+    } else {
+      codeEditor.markColours([]);
+      codeEditor.mark(editorLine); // mark gutter of curr instr w red dot
+      codeEditor.next(state.stage === "R" ? editorLine : -1);
+    }
  
     if (state.error) {
       consEditor.log(state.error);
@@ -235,9 +259,12 @@ export function App() {
  
     // ctrl: mark whichever signals this stage actually reads, mirroring
     // exactly which ctrl.RD(name, op) calls mips.js's exec() made per case.
-    const op = state.op;
-    if (isKnownOp(op)) {
-      for (const name of STAGE_SIGNALS[state.stage]) {
+    // Pipeline mode: every instruction in flight reads its own stage's
+    // signals this cycle.
+    const reads = pipelineSlots.length > 0 ? pipelineSlots.map((s) => ({ op: s.op, stage: s.stage })) : [{ op: state.op, stage: state.stage }];
+    for (const { op, stage } of reads) {
+      if (!isKnownOp(op)) continue;
+      for (const name of STAGE_SIGNALS[stage]) {
         ctrlBank.RD(name, op);
       }
     }
@@ -271,7 +298,26 @@ export function App() {
               onChange={(e) => setSpeedMs(1550 - Number(e.target.value))}
             />
           </label>
-          {machine.current && (
+          {machine.current && showPipeline && (
+            // Pipeline mode: which instruction is in each stage this cycle,
+            // in the same colour as its wires.
+            <span className="app-stage-indicator">
+              cycle={machine.history.length}
+              {(["F", "D", "A", "M", "R"] as CycleStage[]).map((stage) => {
+                const slot = machine.pipelineSlots.find((s) => s.stage === stage);
+                return (
+                  <span
+                    key={stage}
+                    style={slot ? { color: PIPELINE_WIRE_COLOURS[slot.seq % PIPELINE_WIRE_COLOURS.length] } : undefined}
+                  >
+                    {" "}
+                    {stage}:{slot ? `${slot.op}@${slot.pc}` : "-"}
+                  </span>
+                );
+              })}
+            </span>
+          )}
+          {machine.current && !showPipeline && (
             <span className="app-stage-indicator">
               line={machine.current.pc} stage={STAGE_LABELS[machine.current.stage]} op={machine.current.op}
             </span>
@@ -323,9 +369,20 @@ export function App() {
             </button>
             <button
               className={showPipeline ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
-              onClick={() => setShowPipeline((p) => !p)}
+              onClick={() => {
+                // The two modes step differently (micro-step vs. clock
+                // cycle), so a run in progress can't carry over: start it
+                // again from the first instruction, as Assemble does.
+                setPlaying(false);
+                machine.reset();
+                setShowPipeline((p) => !p);
+              }}
               aria-pressed={showPipeline}
-              title={showPipeline ? "Hide pipeline registers" : "Show pipeline registers"}
+              title={
+                showPipeline
+                  ? "Switch back to single-cycle execution (restarts the run)"
+                  : "Switch to pipelined execution (restarts the run)"
+              }
             >
               Toggle Pipeline
             </button>
@@ -335,6 +392,7 @@ export function App() {
               activeWires={machine.current?.activeWires ?? []}
               state={machine.current}
               features={{ shift: showShift, jump: showJump, pipeline: showPipeline }}
+              pipelineSlots={machine.pipelineSlots}
             />
           </div>
         </section>

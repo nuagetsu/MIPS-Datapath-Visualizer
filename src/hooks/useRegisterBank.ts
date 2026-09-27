@@ -34,6 +34,10 @@ export interface RegisterBank {
    * and returns its current bits synchronously. Accepts either "$t0" or
    * "t0". */
   RR: (name: string) => Int32Bits;
+  /** Same value RR() would return, without marking anything — for
+   * pipeline.ts's look-ahead, which reads an instruction's registers when
+   * it's fetched but only marks them when it reaches Decode. */
+  peek: (name: string) => Int32Bits;
   /** Write a register — marks it "warning" (this cycle wrote this
    * register). Throws RuntimeError if the register is readonly ($zero),
    * matching reg.js's reg$ReadOnly exactly. */
@@ -79,6 +83,8 @@ export function useRegisterBank(): RegisterBank {
     return bits;
   }, []);
  
+  const peek = useCallback((name: string): Int32Bits => bitsRef.current[bareName(name)], []);
+
   const WR = useCallback((name: string, bits: Int32Bits): void => {
     const key = bareName(name);
     const def = REGISTERS.find((d) => d.name === key);
@@ -122,5 +128,5 @@ export function useRegisterBank(): RegisterBank {
     }
   }, []);
  
-  return { registers, RR, WR, RES, setBase, trySave };
+  return { registers, RR, peek, WR, RES, setBase, trySave };
 }

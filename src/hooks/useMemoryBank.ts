@@ -12,7 +12,14 @@
 import { useCallback, useRef, useState } from "react";
 import { int32, type Int32Bits } from "../lib/Numbers/int32";
 import * as bit from "../lib/Numbers/bit";
-import { RuntimeError } from "../lib/Numbers/err";
+import {
+  unalignedMem,
+  outOfRangeMem,
+  wordIndexOf,
+  byteOffsetOf,
+  getByteBits,
+  setByteBits,
+} from "../lib/mips-machine/memoryWords";
 
 export type DisplayBase = "hex" | "dec";
 export type MarkStatus = "default" | "success" | "warning" | "danger";
@@ -33,42 +40,15 @@ export interface MemoryBank {
   /** Sign-extended to 32 bits — see file header. */
   lb: (addr: number) => Int32Bits;
   sb: (addr: number, val: Int32Bits) => void;
+  /** The word at a (4-aligned) byte address, without marking any cell —
+   * for pipeline.ts's look-ahead, which reads an instruction's memory when
+   * it's fetched but only marks it when it reaches Memory. */
+  peekWord: (addr: number) => Int32Bits;
   ulw: (addr: number) => Int32Bits;
   usw: (addr: number, val: Int32Bits) => void;
   RES: () => void;
   setBase: (wordIndex: number, base: DisplayBase) => void;
   trySave: (wordIndex: number, text: string) => boolean;
-}
-
-function unalignedMem(op: string, addr: number) {
-  return new RuntimeError(`Unaligned ${op} operation on address ${addr}`, "mem.ts", [addr]);
-}
-function outOfRangeMem(op: string, addr: number) {
-  return new RuntimeError(`Address ${addr} is out of range in ${op}`, "mem.ts", [addr]);
-}
-
-function wordIndexOf(addr: number): number {
-  return Math.floor(addr / 4);
-}
-function byteOffsetOf(addr: number): number {
-  return addr - wordIndexOf(addr) * 4;
-}
-
-/** Extracts byte `n` (0-3) from a 32-bit word, matching SB's little-endian
- * byte-offset convention (byte 0 = least significant). */
-function getByteBits(word: Int32Bits, n: number): Int32Bits {
-  return bit.get(word, n * 8, 8);
-}
-
-/** Writes an 8-bit value into byte position `n` (0-3) of a 32-bit word,
- * leaving the other 3 bytes untouched — direct port of the original SB()'s
- * mask/shift logic. */
-function setByteBits(word: Int32Bits, n: number, val: Int32Bits): Int32Bits {
-  const shift = 8 * n;
-  const byteMask = int32.hex("FF");
-  const shifted = bit.sll(int32.and(val, byteMask), shift);
-  const clearMask = bit.inv(bit.sll(byteMask, shift));
-  return int32.or(int32.and(clearMask, word), shifted);
 }
 
 export function useMemoryBank(size = 256): MemoryBank {
@@ -130,6 +110,8 @@ export function useMemoryBank(size = 256): MemoryBank {
     },
     [checkRange, markCell],
   );
+
+  const peekWord = useCallback((addr: number): Int32Bits => bitsRef.current[wordIndexOf(addr)], []);
 
   const sb = useCallback(
     (addr: number, val: Int32Bits): void => {
@@ -208,6 +190,7 @@ export function useMemoryBank(size = 256): MemoryBank {
     sw,
     lb,
     sb,
+    peekWord,
     ulw,
     usw,
     RES,

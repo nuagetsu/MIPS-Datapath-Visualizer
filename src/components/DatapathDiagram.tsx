@@ -68,6 +68,7 @@ import {
   PIPELINE_VIEW_Y,
   type Stage,
 } from "../lib/mips-machine/datapathWires";
+import type { PipelineSlotView } from "../lib/mips-machine/pipeline";
 import type { MachineState } from "../lib/mips-machine/machineState";
 import "./DatapathDiagram.css";
 
@@ -97,7 +98,22 @@ export interface DatapathDiagramProps {
   /** Optional — toggles the shift/jump artwork independently. Omitted
    * fields and the whole prop default to shown (both true). */
   features?: DatapathFeatures;
+  /** Pipeline mode only: the instructions in flight this cycle
+   * (useMachineHistory's pipelineSlots). Each lights the pieces of its own
+   * wiring that lie in the stage region it occupies, in its own colour
+   * (PIPELINE_WIRE_COLOURS[seq % 5]). activeWires is not used in pipeline
+   * mode. */
+  pipelineSlots?: PipelineSlotView[];
 }
+
+/** Which stage region of the pipelined diagram each micro-step lights. */
+const REGION_OF_STEP: Record<string, Stage> = { F: "IF", D: "ID", A: "EX", M: "MEM", R: "WB" };
+
+/** Pipeline mode's wire colours, by instruction: the 1st instruction
+ * executed is red, the 2nd blue, then green, orange, purple, and the 6th
+ * red again — so at most one instruction in flight has each colour. Red
+ * is the single-cycle highlight colour (.dp-wire-active). */
+export const PIPELINE_WIRE_COLOURS = ["#d0342c", "#1f6fd6", "#1e9e46", "#e67e00", "#8e44ad"] as const;
 
 function fieldBits(inst: Int32Bits, idx: number, len: number): string {
   return bit.get(inst, idx, len).join("");
@@ -163,7 +179,7 @@ function CtrlTick({ x, y1, y2 }: { x: number; y1: number; y2: number }) {
   return <line x1={x} y1={y1} x2={x} y2={y2} className="dp-ctrl-line" markerEnd="url(#dp-arrow-blue)" />;
 }
 
-export function DatapathDiagram({ activeWires, state, features }: DatapathDiagramProps) {
+export function DatapathDiagram({ activeWires, state, features, pipelineSlots }: DatapathDiagramProps) {
   const shift = features?.shift ?? true;
   const jump = features?.jump ?? true;
   const pipeline = features?.pipeline ?? false;
@@ -187,15 +203,49 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
   // artwork existed, instead of lighting a wire that's about to be hidden
   // (which would just make the ALU's second operand look permanently
   // dark for every shift instruction).
-  const remappedWires = shift ? activeWires : activeWires.map((w) => (w === "SHAMT_ALU2" ? "MUX2_ALU2" : w));
-  const active = activeSegmentKeys(remappedWires);
+  //
   // Jump can't be remapped the same way — MUX4_PC isn't a real WireId
   // anymore (see LEGACY_SEGMENTS's header comment), so it can't flow
   // through activeSegmentKeys's WireId[]-typed input. Light it directly
-  // whenever any of the real jump-path wires were active this step.
-  if (!jump && activeWires.some((w) => w === "MUX4_MUX5" || w === "LS_MUX5" || w === "MUX5_PC")) {
-    active.add("MUX4_PC");
+  // whenever any of the real jump-path wires are lit.
+  const litKeys = (wires: WireId[]): Set<string> => {
+    const keys = activeSegmentKeys(shift ? wires : wires.map((w) => (w === "SHAMT_ALU2" ? "MUX2_ALU2" : w)));
+    if (!jump && wires.some((w) => w === "MUX4_MUX5" || w === "LS_MUX5" || w === "MUX5_PC")) keys.add("MUX4_PC");
+    return keys;
+  };
+
+  // Single-cycle mode: a whole segment lights, red, when its wire is
+  // active this micro-step.
+  const active = pipeline ? new Set<string>() : litKeys(activeWires);
+  // Pipeline mode: each stage region shows the instruction occupying it
+  // this cycle — the pieces of that instruction's wiring in the region,
+  // in that instruction's colour.
+  const regionLit = new Map<Stage, { keys: Set<string>; wires: WireId[]; colour: number }>();
+  if (pipeline) {
+    for (const slot of pipelineSlots ?? []) {
+      regionLit.set(REGION_OF_STEP[slot.stage], {
+        keys: litKeys(slot.wires),
+        wires: slot.wires,
+        colour: slot.seq % PIPELINE_WIRE_COLOURS.length,
+      });
+    }
   }
+  /** Colour index for one rendered piece of segment `key`, or null if
+   * it's unlit. Single-cycle mode: 0 (red) for any piece of an active
+   * segment. Pipeline mode: the colour of the instruction in the piece's
+   * stage region, if that instruction uses this segment. */
+  const pieceColour = (key: string, piece: { stage?: Stage }): number | null => {
+    if (!pipeline) return active.has(key) ? 0 : null;
+    const lit = piece.stage ? regionLit.get(piece.stage) : undefined;
+    return lit && lit.keys.has(key) ? lit.colour : null;
+  };
+  const wireProps = (colour: number | null, arrow: boolean) => ({
+    className: colour === null ? "dp-wire" : "dp-wire dp-wire-active",
+    style: pipeline && colour !== null ? { stroke: PIPELINE_WIRE_COLOURS[colour] } : undefined,
+    markerEnd: arrow
+      ? `url(#${colour === null ? "dp-arrow" : pipeline ? `dp-arrow-p${colour}` : "dp-arrow-active"})`
+      : undefined,
+  });
 
   // Segments to hide entirely when a feature is off, and — for jump only
   // — the legacy segment to substitute back in. Shift needs no
@@ -206,10 +256,13 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
   if (!jump) ["MUX4_MUX5", "JADDR_LS", "LS_MUX5", "MUX5_PC"].forEach((k) => hiddenSegments.add(k));
   // Pipeline mode's MEM/WB -> WR wire (see PIPELINE_WB_WR in
   // datapathWires.ts) lights during write-back, alongside WD.
-  const wbWrActive = activeWires.includes("MUX3_WD");
+  const wbLit = regionLit.get("WB");
+  const wbWrColour = wbLit && wbLit.wires.includes("MUX3_WD") ? wbLit.colour : null;
   const segmentsToRender = jump ? SEGMENTS : { ...SEGMENTS, ...LEGACY_SEGMENTS };
 
-  const inst = state?.inst ?? null;
+  // The instruction-field column shows the instruction being decoded — in
+  // pipeline mode, whichever one is in Decode this cycle.
+  const inst = pipeline ? (pipelineSlots?.find((s) => s.stage === "D")?.state.inst ?? null) : (state?.inst ?? null);
 
   const fieldRows: { name: string; idx: number; len: number; y: number }[] = [
     { name: "opcode", idx: 26, len: 6, y: 150 },
@@ -232,6 +285,11 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
         <marker id="dp-arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" className="dp-arrowhead-blue" />
         </marker>
+        {PIPELINE_WIRE_COLOURS.map((colour, i) => (
+          <marker key={colour} id={`dp-arrow-p${i}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" style={{ fill: colour }} />
+          </marker>
+        ))}
       </defs>
 
       {/* ---- Wires (drawn first, so component boxes sit on top) ---- */}
@@ -239,28 +297,17 @@ export function DatapathDiagram({ activeWires, state, features }: DatapathDiagra
         {Object.entries(segmentsToRender)
           .filter(([key]) => !hiddenSegments.has(key))
           .flatMap(([key, seg]) => {
-            const isActive = active.has(key);
             // In pipeline mode one segment can become several pieces (split
-            // at each bar it crosses); they all share the segment's key for
-            // highlighting, so a lit wire lights on both sides of a bar.
+            // at each bar it crosses), each tagged with its stage region and
+            // coloured by whichever instruction is in that region.
             const pieces = pipeline ? pipelineSegment(key, seg) : [seg];
             return pieces.map((piece, i) => (
-              <path
-                key={`${key}-${i}`}
-                d={piece.d}
-                className={isActive ? "dp-wire dp-wire-active" : "dp-wire"}
-                markerEnd={piece.arrow ? `url(#${isActive ? "dp-arrow-active" : "dp-arrow"})` : undefined}
-              />
+              <path key={`${key}-${i}`} d={piece.d} {...wireProps(pieceColour(key, piece), piece.arrow)} />
             ));
           })}
         {pipeline &&
           PIPELINE_WB_WR.map((piece, i) => (
-            <path
-              key={`WB_WR-${i}`}
-              d={piece.d}
-              className={wbWrActive ? "dp-wire dp-wire-active" : "dp-wire"}
-              markerEnd={piece.arrow ? `url(#${wbWrActive ? "dp-arrow-active" : "dp-arrow"})` : undefined}
-            />
+            <path key={`WB_WR-${i}`} d={piece.d} {...wireProps(wbWrColour, piece.arrow)} />
           ))}
       </g>
 

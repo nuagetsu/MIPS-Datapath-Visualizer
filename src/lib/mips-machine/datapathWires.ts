@@ -35,6 +35,10 @@ export interface WireSegment {
   pts?: number[];
   /** Endpoints [x0, y0, x1, y1] of a loop() connector, for the same reason. */
   arc?: [number, number, number, number];
+  /** Pipeline mode only: which stage region this piece of wire sits in
+   * (see pipelineSegment). DatapathDiagram lights a piece only during its
+   * own stage. */
+  stage?: Stage;
 }
 
 function poly(points: number[], arrow: boolean): WireSegment {
@@ -566,14 +570,58 @@ const PIPELINE_OVERRIDES: Record<string, OverridePart[]> = {
  * ends at y=555 and WD_'s y=575 return run stops at x=350. */
 export const PIPELINE_JADDR_LABEL = { x: JADDR_X - 64, y: 577, width: 60 };
 
+// ---- Stage regions (pipeline-mode highlighting) ---------------------------
+/**
+ * In pipeline mode a wire is lit piece by piece: during a micro-step only
+ * the pieces in that step's stage region light (F -> IF, D -> ID, A -> EX,
+ * M -> MEM, R -> WB). So in Decode a wire lights up to where it enters
+ * ID/EX, in ALU from where it leaves ID/EX up to EX/MEM, and so on.
+ *
+ * A piece's region is where its wire *starts* (by x, relative to the bars'
+ * centers), advanced one stage for every bar the wire has passed through
+ * before that piece. Backward wires start at their source, so e.g. WB_WR
+ * (from MEM/WB) is WB. Exceptions:
+ *   - STAGE_BY_KEY pins a whole segment to one stage. WD_'s tail segments
+ *     are drawn in the ID area but carry MUX 3's write-back value, so WB.
+ *     The PC update — MUX 4 -> MUX 5 -> PC, and for jumps inst[25:0] ->
+ *     Left Shift -> MUX 5 — is WB too, matching the single-cycle view, where
+ *     execStage lights all of it in the R step (it's where the interpreter
+ *     actually writes PC). By position they'd be MEM and ID.
+ *   - MEM_TO_WB_KEYS: the two wires feeding MUX 4 (PC+4 and the branch
+ *     target) keep their earlier pieces in their own stages — they travel
+ *     through IF/ID, ID/EX and EX/MEM with the instruction — but the piece
+ *     from EX/MEM into MUX 4 is part of that same PC update, so WB as well.
+ */
+const STAGE_ORDER: Stage[] = ["IF", "ID", "EX", "MEM", "WB"];
+const STAGE_BY_KEY: Record<string, Stage> = {
+  WD_: "WB",
+  _WD_: "WB",
+  _WD: "WB",
+  MUX4_MUX5: "WB",
+  MUX5_PC: "WB",
+  MUX4_PC: "WB",
+  JADDR_LS: "WB",
+  LS_MUX5: "WB",
+};
+const MEM_TO_WB_KEYS = new Set(["_MUX4", "ADD2_MUX4"]);
+
+function stageAtX(x: number): Stage {
+  let n = 0;
+  for (const b of PIPELINE_BARS) if (x >= b.x + b.width / 2) n++;
+  return STAGE_ORDER[n];
+}
+
 /** Splits a pipelined-coordinate polyline wherever a horizontal run passes
  * fully through a bar. Every piece except the last ends at a bar's near
  * edge with an arrowhead (flowing into the register); the last keeps the
  * original segment's own arrow setting. All wires in this diagram are
  * axis-aligned, and no vertical run falls inside a bar's x-range, so only
  * horizontal runs need checking. */
-function splitAtBars(pts: number[], arrow: boolean): WireSegment[] {
+function splitAtBars(pts: number[], arrow: boolean, pinned?: Stage): WireSegment[] {
   const pieces: number[][] = [];
+  // Stage index of each piece, advanced at every bar crossing.
+  let stageIdx = STAGE_ORDER.indexOf(stageAtX(pts[0]));
+  const pieceStages: number[] = [];
   let cur = [pts[0], pts[1]];
   for (let i = 2; i < pts.length; i += 2) {
     const x0 = pts[i - 2], y0 = pts[i - 1], x1 = pts[i], y1 = pts[i + 1];
@@ -588,13 +636,24 @@ function splitAtBars(pts: number[], arrow: boolean): WireSegment[] {
         const far = dir > 0 ? b.x + b.width : b.x;
         cur.push(near, y0);
         pieces.push(cur);
+        pieceStages.push(stageIdx);
+        stageIdx += dir;
         cur = [far, y0];
       }
     }
     cur.push(x1, y1);
   }
   pieces.push(cur);
-  return pieces.map((p, i) => poly(p, i < pieces.length - 1 ? true : arrow));
+  pieceStages.push(stageIdx);
+  return pieces.map((p, i) => ({
+    ...poly(p, i < pieces.length - 1 ? true : arrow),
+    stage: pinned ?? STAGE_ORDER[pieceStages[i]],
+  }));
+}
+
+/** A loop() hop, tagged with the stage region it sits in. */
+function stagedLoop(x0: number, y0: number, x1: number, y1: number, pinned?: Stage): WireSegment {
+  return { ...loop(x0, y0, x1, y1), stage: pinned ?? stageAtX(x0) };
 }
 
 /** The pipelined version of one SEGMENTS/LEGACY_SEGMENTS entry: moved into
@@ -613,6 +672,13 @@ function shiftTop(pts: number[]): number[] {
 }
 
 export function pipelineSegment(key: string, seg: WireSegment): WireSegment[] {
+  const pieces = pipelinePieces(key, seg);
+  if (!MEM_TO_WB_KEYS.has(key)) return pieces;
+  return pieces.map((p) => (p.stage === "MEM" ? { ...p, stage: "WB" as Stage } : p));
+}
+
+function pipelinePieces(key: string, seg: WireSegment): WireSegment[] {
+  const pinned = STAGE_BY_KEY[key];
   const override = PIPELINE_OVERRIDES[key];
   if (override) {
     // Only the last part carries the segment's own arrowhead; polyline parts
@@ -620,9 +686,9 @@ export function pipelineSegment(key: string, seg: WireSegment): WireSegment[] {
     return override.flatMap((part, i) => {
       if (!Array.isArray(part)) {
         const [x0, y0, x1, y1] = shiftTop(part.arc);
-        return [loop(x0, y0, x1, y1)];
+        return [stagedLoop(x0, y0, x1, y1, pinned)];
       }
-      return splitAtBars(shiftTop(part), i === override.length - 1 ? seg.arrow : false);
+      return splitAtBars(shiftTop(part), i === override.length - 1 ? seg.arrow : false, pinned);
     });
   }
 
@@ -630,13 +696,13 @@ export function pipelineSegment(key: string, seg: WireSegment): WireSegment[] {
     const [x0, y0, x1, y1] = seg.arc;
     const o = offsetOfX(x0);
     const [sx0, sy0, sx1, sy1] = shiftTop([x0 + o, y0, x1 + o, y1]);
-    return [loop(sx0, sy0, sx1, sy1)];
+    return [stagedLoop(sx0, sy0, sx1, sy1, pinned)];
   }
 
   if (!seg.pts) return [seg];
   const pts = seg.pts.slice();
   for (let i = 0; i < pts.length; i += 2) pts[i] += offsetOfX(pts[i]);
-  return splitAtBars(shiftTop(pts), seg.arrow);
+  return splitAtBars(shiftTop(pts), seg.arrow, pinned);
 }
 
 // ---- Write register, from MEM/WB back to WR (pipeline mode only) ----------
@@ -670,7 +736,7 @@ export const PIPELINE_WB_WR: WireSegment[] = [
   poly([WD_UP_X - 5, WB_Y, WR_UP_X, WB_Y, WR_UP_X, IMM_Y + 5], false),
   loop(WR_UP_X, IMM_Y + 5, WR_UP_X, IMM_Y - 5),
   poly([WR_UP_X, IMM_Y - 5, WR_UP_X, WR_PORT_Y, WR_PORT_X, WR_PORT_Y], true),
-];
+].map((piece) => ({ ...piece, stage: "WB" as Stage }));
 
 /** How far the bottom band (jump shift-left ellipse etc.) moves down in
  * pipeline mode — for DatapathDiagram's component placement. */

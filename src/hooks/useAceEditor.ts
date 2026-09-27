@@ -15,6 +15,8 @@
  * Behavior preserved 1:1 from the original:
  *   - base/value/load/save/read/log            content I/O
  *   - mark(line)   -> gutter decoration ("current line")
+ *   - markColours([...]) -> several coloured gutter dots at once (pipeline
+ *                     mode: one per instruction in flight, in its colour)
  *   - next(line)   -> full-line marker ("next line to execute")
  *   - err(line)    -> reuses Ace's breakpoint mechanism for error highlight
  *   - reset()      -> clears mark/next/err (was RES() in the original)
@@ -112,6 +114,10 @@ export interface AceEditorHandle {
   read: (evt: React.ChangeEvent<HTMLInputElement>) => void;
   log: (text: string, end?: string) => void;
   mark: (line: number) => void;
+  /** Coloured gutter dots, replacing any previous set (pass [] to clear).
+   * Several entries on the same line become side-by-side dots, in the
+   * order given. Independent of mark()'s single red dot. */
+  markColours: (marks: { line: number; colour: string }[]) => void;
   next: (line: number) => void;
   err: (line: number) => void;
   reset: () => void;
@@ -128,6 +134,50 @@ const DEFAULTS: Required<AceEditorOptions> = {
 
 const DEFAULT_BREAKPOINT_CLASS = "ace_breakpoint";
 
+// ---- markColours() dot styles ------------------------------------------
+/**
+ * Gutter decorations can only add a class to a gutter cell, so each
+ * distinct combination of dot colours on a line gets its own class, whose
+ * ::before draws those dots — same size and spacing as mark()'s red "RD"
+ * dot in AceEditorPanel.css, overlapping slightly when there are several
+ * so they fit the gutter. The rules are generated here, once per
+ * combination, into one shared <style> element, rather than hard-coded in
+ * CSS: callers pass whatever colours they use (e.g. DatapathDiagram's
+ * PIPELINE_WIRE_COLOURS), so there's no second copy of a palette to keep
+ * in sync.
+ */
+const DOT = 8;
+const DOT_STEP = 5;
+let colourDotStyle: HTMLStyleElement | null = null;
+const colourDotRules = new Set<string>();
+
+function colourDotClass(colours: string[]): string {
+  const cls = "PDOT-" + colours.map((c) => c.replace(/[^0-9a-zA-Z]/g, "")).join("-");
+  if (!colourDotRules.has(cls)) {
+    colourDotRules.add(cls);
+    let style = colourDotStyle;
+    if (!style) {
+      style = document.createElement("style");
+      document.head.appendChild(style);
+      colourDotStyle = style;
+    }
+    const r = DOT / 2;
+    // CSS draws the first background on top, so list them last-to-first to
+    // stack each dot over the one before it.
+    const layers = colours
+      .map((c, i) => `radial-gradient(circle ${r}px at ${r + i * DOT_STEP}px 50%, ${c} ${r - 0.5}px, transparent ${r}px)`)
+      .reverse()
+      .join(", ");
+    const width = DOT + (colours.length - 1) * DOT_STEP;
+    style.appendChild(
+      document.createTextNode(
+        `.ace_gutter-cell.${cls}::before { content: ""; display: inline-block; width: ${width}px; height: ${DOT}px; margin-right: 4px; background: ${layers}; }\n`,
+      ),
+    );
+  }
+  return cls;
+}
+
 export function useAceEditor(
   containerRef: React.RefObject<HTMLDivElement | null>,
   opt: AceEditorOptions = {}
@@ -139,6 +189,8 @@ export function useAceEditor(
   const editorRef = useRef<Ace.Editor | null>(null);
   const breakpointsRef = useRef<Set<number>>(new Set());
   const markedLineRef = useRef<number>(-1);
+  // markColours(): the gutter decoration class currently on each line.
+  const colourDotsRef = useRef<Map<number, string>>(new Map());
   const nextMarkerIdRef = useRef<number | undefined>(undefined);
   const baseAddrRef = useRef<number>(0);
 
@@ -250,6 +302,21 @@ export function useAceEditor(
       markedLineRef.current = line;
     };
 
+    const markColours = (marks: { line: number; colour: string }[]) => {
+      for (const [line, cls] of colourDotsRef.current) session.removeGutterDecoration(line, cls);
+      colourDotsRef.current.clear();
+      const byLine = new Map<number, string[]>();
+      for (const { line, colour } of marks) {
+        if (line < 0) continue;
+        byLine.set(line, [...(byLine.get(line) ?? []), colour]);
+      }
+      for (const [line, colours] of byLine) {
+        const cls = colourDotClass(colours);
+        session.addGutterDecoration(line, cls);
+        colourDotsRef.current.set(line, cls);
+      }
+    };
+
     const next = (line: number) => {
       if (nextMarkerIdRef.current !== undefined) {
         session.removeMarker(nextMarkerIdRef.current);
@@ -273,11 +340,12 @@ export function useAceEditor(
 
     const reset = () => {
       mark(-1);
+      markColours([]);
       next(-1);
       err(-1);
     };
 
-    setHandle({ editor, base, value, load, save, read, log, mark, next, err, reset });
+    setHandle({ editor, base, value, load, save, read, log, mark, markColours, next, err, reset });
 
     // ---- cleanup --------------------------------------------------------
     // The original never destroyed the editor (fine in a static page, but
