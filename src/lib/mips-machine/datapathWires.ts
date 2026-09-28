@@ -741,3 +741,328 @@ export const PIPELINE_WB_WR: WireSegment[] = [
 /** How far the bottom band (jump shift-left ellipse etc.) moves down in
  * pipeline mode — for DatapathDiagram's component placement. */
 export const PIPELINE_BOTTOM_DY = BOTTOM_DY;
+// ---- Control unit (pipeline mode) -----------------------------------------
+/**
+ * The textbook's Control oval and its control lines, for pipeline mode only.
+ * The oval and its input (the opcode field -> Control) are always drawn; the
+ * rest — every control line and the WB/M/EX cells on the pipeline registers
+ * — is an overlay DatapathDiagram shows only while the oval is hovered (or
+ * focused), so the everyday diagram stays as uncluttered as before.
+ *
+ * Everything is in final pipelined coordinates (after shiftTop), derived
+ * from the constants above where the placement depends on them.
+ *
+ * Control lines end at the existing blue control labels (RegDst, ALUSrc,
+ * ALUctrl, Branch, Jump, MemWrite, MemRead, MemToReg, RegWrite) rather than
+ * at the components: the label names the signal and its existing tick
+ * already carries it into the component.
+ *
+ * Grouping follows the textbook: EX = RegDst, ALUSrc, ALUctrl; M = Branch,
+ * Jump, MemRead, MemWrite (Jump joins M because MUX 5 sits with MUX 4 after
+ * EX/MEM); WB = MemToReg, RegWrite.
+ *
+ * Routing — why each line runs where it does:
+ *   - Oval: above the Register File (y=151-187, 13 clear of its top), fed
+ *     straight from the opcode field at the M cell's height (169), so its
+ *     output runs straight into ID/EX's M cell and forks at x=470, just past
+ *     the Register File's right edge (465), up to WB and down to EX.
+ *   - EX has only two free horizontal bands: y=85, between PC+4 (75) and
+ *     Add2's top (95), and y=177-195, between the branch shifter's bottom
+ *     (170) and the ALU's top-left corner (200). WB takes the top band
+ *     (jogging up at x=525, before _LS at 534); M steps down to 177; EX's
+ *     own line runs at 195 into the ALUctrl label and feeds a bus at x=580
+ *     (between MWD_'s vertical at 569 and MUX 2 at 599) down to ALUSrc and
+ *     RegDst.
+ *   - EX/MEM's and MEM/WB's cells sit at y=210-262, below MUX 4's label
+ *     (bottom 210) and above MemWrite (272): the only band there that
+ *     reaches MEM/WB (top 200). Both lanes step down in the gap between the
+ *     ALU/Add2 and EX/MEM.
+ *   - M fans out along y=249: a riser at x=895 up into the "Branch" line of
+ *     MUX 4's label from the right; x=919 (Data Memory's centre, under
+ *     MUX 5) up to Jump and down to MemWrite; and on along 249 to x=980,
+ *     down the right-hand side of Data Memory to MemRead.
+ *   - isZero, the ALU's other input to the branch decision, runs from the
+ *     ALU's right edge at its "isZero?" label (y=281) through EX/MEM's
+ *     body (below the cells) and rises at x=870 into the "isZero?" line of
+ *     MUX 4's label — so Branch and isZero each visibly reach their own
+ *     word of "Branch & isZero?".
+ *   - WB's line to MEM/WB (y=223) must cross the isZero, Branch and Jump
+ *     risers — unavoidable with WB above M, as in the textbook — so it hops
+ *     them; M's line hops isZero the same way.
+ *   - RegWrite goes back to the Register File along the bottom, where
+ *     nothing crosses a bar: right of MUX 3 and WD_ (x=1128), under LS_MUX5
+ *     (y=610), and up at x=472 into the RegWrite label.
+ *
+ * Crossings with the (black) data wires are left unhopped: DatapathDiagram
+ * draws every control line over a white casing, which reads as "passes
+ * over". Only the two control-on-control crossings get hops.
+ *
+ * Each line also records `start`, its distance from the oval along the
+ * control lines, so the hover animation can flow outward at a constant
+ * speed: a line starts drawing when the flow reaches its first point.
+ */
+const [, ctrlIdEx, ctrlExMem, ctrlMemWb] = PIPELINE_BARS;
+const CTRL_FIELD_RIGHT = 80 + ID_OFFSET; // opcode field's right edge, x=245
+/** Cells are larger than the bars' width (16) so they're easy to see: 30
+ * wide (overhanging the bar by 7 each side) and 26 tall. Control lines end
+ * and start at the cell edges, not the bar edges. */
+const CTRL_CELL_H = 26;
+const CTRL_CELL_W = 30;
+const cellLeft = (bar: PipelineBar) => bar.x + bar.width / 2 - CTRL_CELL_W / 2;
+const cellRight = (bar: PipelineBar) => bar.x + bar.width / 2 + CTRL_CELL_W / 2;
+/** The oval's output fork, up to WB and down to EX: 5 right of the
+ * Register File's edge (465; the fork ends at y=195, above its top at 200),
+ * leaving a 12-unit run into ID/EX's cells (left edge 482) for the
+ * arrowheads. */
+const CTRL_FORK_X = 470;
+/** ID/EX's cells start here so EX's centre is 195 — as low as the EX line
+ * can run above the ALU's top-left corner (200) — putting WB at 143 and M
+ * at 169 (the oval's height). */
+const CTRL_IDEX_TOP = 130;
+/** EX/MEM's and MEM/WB's cells: WB centred at 223, M at 249. The top (210)
+ * is MUX 4's label box's bottom edge. */
+const CTRL_LOW_TOP = 210;
+const cellMid = (top: number, i: number) => top + CTRL_CELL_H * i + CTRL_CELL_H / 2;
+const CTRL_WB1_Y = cellMid(CTRL_IDEX_TOP, 0); // 143
+const CTRL_M1_Y = cellMid(CTRL_IDEX_TOP, 1); // 169
+const CTRL_EX1_Y = cellMid(CTRL_IDEX_TOP, 2); // 195
+const CTRL_WB2_Y = cellMid(CTRL_LOW_TOP, 0); // 223
+const CTRL_M2_Y = cellMid(CTRL_LOW_TOP, 1); // 249
+/** M's lane across EX, 7 below the branch shifter's bottom (170): M leaves
+ * its cell at 169 and steps down to it right after ID/EX. */
+const CTRL_M_LANE_Y = 177;
+/** Where M steps down and WB steps up to the top lane, between ID/EX's
+ * cells (right edge 512) and _LS's vertical (534). M's step is the inner
+ * one so the two never cross. */
+const CTRL_M_JOG_X = 517;
+const CTRL_WB_JOG_X = 525;
+/** Midway between PC+4 (y=45) and Add2's top (y=65), after shiftTop. */
+const CTRL_TOP_LANE_Y = (45 + 65) / 2 + TOP_DY; // 85
+const CTRL_EX_BUS_X = 580;
+const CTRL_M_RISER_B = 700 + PIPELINE_OFFSET.MEM; // 919
+/** Branch's riser: between MUX 4's label text (right edge ~881) and Jump's
+ * (left edge ~905), entering the "Branch" line (y~165) from the right. */
+const CTRL_BRANCH_X = 895;
+const CTRL_BRANCH_Y = 165;
+/** isZero: leaves the ALU's right edge (x=759) level with its "isZero?"
+ * label (y~281), passes through EX/MEM below its cells (bottom 262), and
+ * rises at x=870 — under the "isZero?" line of MUX 4's label, above Data
+ * Memory (top 300) — into that line from below. */
+const CTRL_ZERO_Y = 281;
+const CTRL_ZERO_X = 870;
+/** MemRead's drop: down the right-hand side of Data Memory (right 969),
+ * clear of both the isZero riser and MEM/WB (998). */
+const CTRL_MEMREAD_X = 980;
+const CTRL_MEMTOREG_X = 1100; // between MUX 3 (right 1073) and WD_'s vertical (1113)
+const CTRL_REGWRITE_X = 850 + WB + 15; // 1128, 15 right of WD_'s vertical
+const CTRL_BOTTOM_Y = 590 + BOTTOM_DY + 14; // 610, 14 under LS_MUX5
+/** RegWrite's climb from the bottom lane: midway between Sign Extend's
+ * right tip (465) and the bases of the arrowheads entering ID/EX (~479). */
+const CTRL_REGWRITE_UP_X = 472;
+
+export const PIPELINE_CONTROL_OVAL = { cx: 235 + ID_OFFSET, cy: CTRL_M1_Y, rx: 42, ry: 18 };
+
+/** Opcode field -> Control. Always drawn; lit with the instruction in ID. */
+export const PIPELINE_CONTROL_INPUT: WireSegment = {
+  ...poly([CTRL_FIELD_RIGHT, CTRL_M1_Y, PIPELINE_CONTROL_OVAL.cx - PIPELINE_CONTROL_OVAL.rx, CTRL_M1_Y], true),
+  stage: "ID",
+};
+
+export interface ControlCell {
+  label: "WB" | "M" | "EX";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Flow distance at which the incoming control line reaches the cell. */
+  at: number;
+}
+
+export interface ControlWire {
+  key: string;
+  d: string;
+  /** Drawn length, hops included. */
+  length: number;
+  /** Flow distance from the oval at which this line starts. */
+  start: number;
+  /** Arrowhead triangle path, drawn separately so it can appear only when
+   * the line's drawing reaches it. */
+  arrowD: string;
+}
+
+interface ControlWireSpec {
+  key: string;
+  pts: number[];
+  /** The line this one branches off (or continues from, through a
+   * pipeline-register cell). Omitted for lines leaving the oval. */
+  from?: string;
+  /** Crossings with other control lines, as [x, y] on a horizontal run. */
+  hops?: [number, number][];
+}
+
+const CTRL_ARROW_LEN = 8;
+const CTRL_ARROW_HALF = 3.5;
+const HOP_R = 5;
+
+const CONTROL_WIRE_SPECS: ControlWireSpec[] = [
+  // Oval -> ID/EX's WB, M, EX cells.
+  { key: "oval-m", pts: [PIPELINE_CONTROL_OVAL.cx + PIPELINE_CONTROL_OVAL.rx, CTRL_M1_Y, cellLeft(ctrlIdEx), CTRL_M1_Y] },
+  { key: "oval-wb", from: "oval-m", pts: [CTRL_FORK_X, CTRL_M1_Y, CTRL_FORK_X, CTRL_WB1_Y, cellLeft(ctrlIdEx), CTRL_WB1_Y] },
+  { key: "oval-ex", from: "oval-m", pts: [CTRL_FORK_X, CTRL_M1_Y, CTRL_FORK_X, CTRL_EX1_Y, cellLeft(ctrlIdEx), CTRL_EX1_Y] },
+  // EX: ALUctrl, then the bus down to ALUSrc and RegDst.
+  { key: "ex-aluctrl", from: "oval-ex", pts: [cellRight(ctrlIdEx), CTRL_EX1_Y, 681, CTRL_EX1_Y] },
+  { key: "ex-alusrc", from: "ex-aluctrl", pts: [CTRL_EX_BUS_X, CTRL_EX1_Y, CTRL_EX_BUS_X, 450, 591, 450] },
+  { key: "ex-regdst", from: "ex-alusrc", pts: [CTRL_EX_BUS_X, 450, CTRL_EX_BUS_X, 496, 631, 496] },
+  // ID/EX -> EX/MEM: WB over the top band, M straight along 177.
+  {
+    key: "wb-exmem",
+    from: "oval-wb",
+    pts: [
+      cellRight(ctrlIdEx), CTRL_WB1_Y,
+      CTRL_WB_JOG_X, CTRL_WB1_Y,
+      CTRL_WB_JOG_X, CTRL_TOP_LANE_Y,
+      cellLeft(ctrlExMem) - 12, CTRL_TOP_LANE_Y,
+      cellLeft(ctrlExMem) - 12, CTRL_WB2_Y,
+      cellLeft(ctrlExMem), CTRL_WB2_Y,
+    ],
+  },
+  {
+    key: "m-exmem",
+    from: "oval-m",
+    pts: [
+      cellRight(ctrlIdEx), CTRL_M1_Y,
+      CTRL_M_JOG_X, CTRL_M1_Y,
+      CTRL_M_JOG_X, CTRL_M_LANE_Y,
+      cellLeft(ctrlExMem) - 23, CTRL_M_LANE_Y,
+      cellLeft(ctrlExMem) - 23, CTRL_M2_Y,
+      cellLeft(ctrlExMem), CTRL_M2_Y,
+    ],
+  },
+  // MEM: M fans out to Jump, MemWrite, Branch, MemRead.
+  {
+    key: "m-jump",
+    from: "m-exmem",
+    pts: [cellRight(ctrlExMem), CTRL_M2_Y, CTRL_M_RISER_B, CTRL_M2_Y, CTRL_M_RISER_B, 185],
+    hops: [[CTRL_ZERO_X, CTRL_M2_Y]],
+  },
+  { key: "m-memwrite", from: "m-jump", pts: [CTRL_M_RISER_B, CTRL_M2_Y, CTRL_M_RISER_B, 269] },
+  { key: "m-branch", from: "m-jump", pts: [CTRL_BRANCH_X, CTRL_M2_Y, CTRL_BRANCH_X, CTRL_BRANCH_Y, 883, CTRL_BRANCH_Y] },
+  { key: "m-memread", from: "m-jump", pts: [CTRL_M_RISER_B, CTRL_M2_Y, CTRL_MEMREAD_X, CTRL_M2_Y, CTRL_MEMREAD_X, 516, 946, 516] },
+  // isZero: ALU -> EX/MEM (through the register's body, like the ALU
+  // result) -> "isZero?" under MUX 4. It starts when the flow reaches the
+  // ALU (the end of the ALUctrl line).
+  { key: "zero-exmem", from: "ex-aluctrl", pts: [550 + PIPELINE_OFFSET.EX, CTRL_ZERO_Y, ctrlExMem.x, CTRL_ZERO_Y] },
+  { key: "zero-mux4", from: "zero-exmem", pts: [ctrlExMem.x + ctrlExMem.width, CTRL_ZERO_Y, CTRL_ZERO_X, CTRL_ZERO_Y, CTRL_ZERO_X, 202] },
+  // EX/MEM -> MEM/WB, hopping M's two risers.
+  {
+    key: "wb-memwb",
+    from: "wb-exmem",
+    pts: [cellRight(ctrlExMem), CTRL_WB2_Y, cellLeft(ctrlMemWb), CTRL_WB2_Y],
+    hops: [
+      [CTRL_ZERO_X, CTRL_WB2_Y],
+      [CTRL_BRANCH_X, CTRL_WB2_Y],
+      [CTRL_M_RISER_B, CTRL_WB2_Y],
+    ],
+  },
+  // WB: RegWrite all the way back along the bottom; MemToReg off it.
+  {
+    key: "wb-regwrite",
+    from: "wb-memwb",
+    pts: [
+      cellRight(ctrlMemWb), CTRL_WB2_Y,
+      CTRL_REGWRITE_X, CTRL_WB2_Y,
+      CTRL_REGWRITE_X, CTRL_BOTTOM_Y,
+      CTRL_REGWRITE_UP_X, CTRL_BOTTOM_Y,
+      CTRL_REGWRITE_UP_X, 455,
+      447, 455,
+    ],
+  },
+  { key: "wb-memtoreg", from: "wb-regwrite", pts: [CTRL_MEMTOREG_X, CTRL_WB2_Y, CTRL_MEMTOREG_X, 560, 1090, 560] },
+];
+
+/** Builds one control line's path: the polyline with its last run trimmed
+ * under the arrowhead, hops inserted as upward half-circles, plus the
+ * arrowhead triangle and the drawn length. */
+function buildControlPath(pts: number[], hops: [number, number][]): { d: string; length: number; arrowD: string } {
+  const n = pts.length;
+  const tx = pts[n - 2], ty = pts[n - 1];
+  const dx = Math.sign(tx - pts[n - 4]), dy = Math.sign(ty - pts[n - 3]);
+  const trimmed = pts.slice();
+  trimmed[n - 2] = tx - dx * (CTRL_ARROW_LEN - 3);
+  trimmed[n - 1] = ty - dy * (CTRL_ARROW_LEN - 3);
+
+  let d = `M ${trimmed[0]} ${trimmed[1]}`;
+  let length = 0;
+  for (let i = 2; i < n; i += 2) {
+    const x0 = trimmed[i - 2], y0 = trimmed[i - 1], x1 = trimmed[i], y1 = trimmed[i + 1];
+    const sx = Math.sign(x1 - x0);
+    const onRun = hops
+      .filter(([hx, hy]) => y0 === y1 && hy === y0 && (hx - x0) * (hx - x1) < 0)
+      .sort((a, b) => sx * (a[0] - b[0]));
+    for (const [hx] of onRun) {
+      d += ` L ${hx - sx * HOP_R} ${y0} A ${HOP_R} ${HOP_R} 0 0 ${sx > 0 ? 1 : 0} ${hx + sx * HOP_R} ${y0}`;
+      length += Math.PI * HOP_R - 2 * HOP_R;
+    }
+    d += ` L ${x1} ${y1}`;
+    length += Math.abs(x1 - x0) + Math.abs(y1 - y0);
+  }
+
+  const bx = tx - dx * CTRL_ARROW_LEN, by = ty - dy * CTRL_ARROW_LEN;
+  const px = -dy * CTRL_ARROW_HALF, py = dx * CTRL_ARROW_HALF;
+  const arrowD = `M ${tx} ${ty} L ${bx + px} ${by + py} L ${bx - px} ${by - py} Z`;
+  return { d, length, arrowD };
+}
+
+/** Distance along an axis-aligned polyline to its point nearest (x, y),
+ * plus the gap from that point to (x, y) — how far the flow has travelled
+ * when a line branching (or continuing through a cell) at (x, y) starts. */
+function distanceAlong(pts: number[], x: number, y: number): number {
+  let bestGap = Infinity, bestAlong = 0, run = 0;
+  for (let i = 2; i < pts.length; i += 2) {
+    const x0 = pts[i - 2], y0 = pts[i - 1], x1 = pts[i], y1 = pts[i + 1];
+    const cx = Math.min(Math.max(x, Math.min(x0, x1)), Math.max(x0, x1));
+    const cy = Math.min(Math.max(y, Math.min(y0, y1)), Math.max(y0, y1));
+    const gap = Math.abs(x - cx) + Math.abs(y - cy);
+    if (gap < bestGap) {
+      bestGap = gap;
+      bestAlong = run + Math.abs(cx - x0) + Math.abs(cy - y0);
+    }
+    run += Math.abs(x1 - x0) + Math.abs(y1 - y0);
+  }
+  return bestAlong + bestGap;
+}
+
+const controlWireStart = new Map<string, number>();
+export const PIPELINE_CONTROL_WIRES: ControlWire[] = CONTROL_WIRE_SPECS.map((spec) => {
+  let start = 0;
+  if (spec.from) {
+    const parent = CONTROL_WIRE_SPECS.find((s) => s.key === spec.from)!;
+    start = controlWireStart.get(spec.from)! + distanceAlong(parent.pts, spec.pts[0], spec.pts[1]);
+  }
+  controlWireStart.set(spec.key, start);
+  return { key: spec.key, start, ...buildControlPath(spec.pts, spec.hops ?? []) };
+});
+
+const controlWireEnd = (key: string) => {
+  const w = PIPELINE_CONTROL_WIRES.find((c) => c.key === key)!;
+  return w.start + w.length;
+};
+const controlCell = (bar: PipelineBar, top: number, i: number, label: ControlCell["label"], enteredBy: string): ControlCell => ({
+  label,
+  x: cellLeft(bar),
+  y: top + CTRL_CELL_H * i,
+  width: CTRL_CELL_W,
+  height: CTRL_CELL_H,
+  at: controlWireEnd(enteredBy),
+});
+
+/** The control portion of each pipeline register, as in the textbook:
+ * ID/EX holds WB, M and EX; EX/MEM holds WB and M; MEM/WB holds WB. */
+export const PIPELINE_CONTROL_CELLS: ControlCell[] = [
+  controlCell(ctrlIdEx, CTRL_IDEX_TOP, 0, "WB", "oval-wb"),
+  controlCell(ctrlIdEx, CTRL_IDEX_TOP, 1, "M", "oval-m"),
+  controlCell(ctrlIdEx, CTRL_IDEX_TOP, 2, "EX", "oval-ex"),
+  controlCell(ctrlExMem, CTRL_LOW_TOP, 0, "WB", "wb-exmem"),
+  controlCell(ctrlExMem, CTRL_LOW_TOP, 1, "M", "m-exmem"),
+  controlCell(ctrlMemWb, CTRL_LOW_TOP, 0, "WB", "wb-memwb"),
+];

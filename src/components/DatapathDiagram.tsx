@@ -44,6 +44,7 @@
  * value and needs updating in step with this one); the SVG's on-page size
  * is pure CSS (DatapathDiagram.css), no JS resize handling.
  */
+import type { CSSProperties } from "react";
 import type { Int32Bits } from "../lib/Numbers/int32";
 import * as bit from "../lib/Numbers/bit";
 import type { WireId } from "../lib/mips-machine/datapath";
@@ -66,6 +67,10 @@ import {
   PIPELINE_TOP_MUX_DX,
   PIPELINE_TOP_DY,
   PIPELINE_VIEW_Y,
+  PIPELINE_CONTROL_OVAL,
+  PIPELINE_CONTROL_INPUT,
+  PIPELINE_CONTROL_WIRES,
+  PIPELINE_CONTROL_CELLS,
   type Stage,
 } from "../lib/mips-machine/datapathWires";
 import type { PipelineSlotView } from "../lib/mips-machine/pipeline";
@@ -179,6 +184,64 @@ function CtrlTick({ x, y1, y2 }: { x: number; y1: number; y2: number }) {
   return <line x1={x} y1={y1} x2={x} y2={y2} className="dp-ctrl-line" markerEnd="url(#dp-arrow-blue)" />;
 }
 
+/** How fast the hover animation's control lines flow out of the Control
+ * oval, in diagram units per second. The longest line (RegWrite, ~2100
+ * units from the oval) takes about 1.4 s; everything else is drawn within
+ * about 0.6 s. */
+const CONTROL_FLOW_SPEED = 1500;
+
+const flowTime = (distance: number) => `${(distance / CONTROL_FLOW_SPEED).toFixed(3)}s`;
+/** CSS custom properties driving one overlay element's hover transition
+ * (see DatapathDiagram.css): --d is when the flow reaches it, --t how long
+ * it takes to draw. */
+const flowVars = (delay: number, duration = 0) => ({ "--d": flowTime(delay), "--t": flowTime(duration) }) as CSSProperties;
+
+/**
+ * Pipeline mode's Control unit: the oval (always shown) plus a hover
+ * overlay with every control line and the WB/M/EX cells on the pipeline
+ * registers (geometry: the "Control unit" section of datapathWires.ts).
+ *
+ * The show/hide is pure CSS (.dp-control:hover / :focus-visible) rather
+ * than React state, so it needs no re-render and works in the static
+ * preview too. The overlay ignores the pointer, so only the oval itself
+ * triggers it. On hover each line draws from its start to its end
+ * (stroke-dashoffset over pathLength=1), starting when the flow from the
+ * oval reaches it, so the signals visibly spread out stage by stage; cells
+ * and arrowheads appear as the flow reaches them. Leaving the oval fades
+ * the whole overlay out.
+ *
+ * Every line is drawn over a white casing, so where it crosses a black
+ * data wire it reads as passing over it without needing a hop.
+ */
+function ControlUnit() {
+  const oval = PIPELINE_CONTROL_OVAL;
+  return (
+    <g className="dp-control" tabIndex={0} aria-label="Control unit: hover or focus to show its control signals">
+      <ellipse cx={oval.cx} cy={oval.cy} rx={oval.rx} ry={oval.ry} className="dp-box dp-control-oval" />
+      <KonvaLabel
+        spec={{ text: "Control", x: oval.cx - oval.rx, y: oval.cy - oval.ry, width: 2 * oval.rx, height: 2 * oval.ry, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" }}
+      />
+      <g className="dp-ctrl-overlay" aria-hidden="true">
+        {PIPELINE_CONTROL_WIRES.map((w) => (
+          <path key={`${w.key}-halo`} d={w.d} pathLength={1} className="dp-ctrl-draw dp-ctrl-halo" style={flowVars(w.start, w.length)} />
+        ))}
+        {PIPELINE_CONTROL_WIRES.map((w) => (
+          <path key={w.key} d={w.d} pathLength={1} className="dp-ctrl-draw dp-ctrl-wire" style={flowVars(w.start, w.length)} />
+        ))}
+        {PIPELINE_CONTROL_WIRES.map((w) => (
+          <path key={`${w.key}-arrow`} d={w.arrowD} className="dp-ctrl-pop dp-ctrl-arrowhead" style={flowVars(w.start + w.length)} />
+        ))}
+        {PIPELINE_CONTROL_CELLS.map((c) => (
+          <g key={`${c.x}-${c.label}`} className="dp-ctrl-pop" style={flowVars(c.at)}>
+            <rect x={c.x} y={c.y} width={c.width} height={c.height} className="dp-ctrl-cell" />
+            <KonvaLabel spec={{ text: c.label, x: c.x, y: c.y, width: c.width, height: c.height, align: "center", vAlign: "middle", bold: true, fontSize: 11, fill: "#2c5aa0" }} />
+          </g>
+        ))}
+      </g>
+    </g>
+  );
+}
+
 export function DatapathDiagram({ activeWires, state, features, pipelineSlots }: DatapathDiagramProps) {
   const shift = features?.shift ?? true;
   const jump = features?.jump ?? true;
@@ -257,6 +320,9 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
   // Pipeline mode's MEM/WB -> WR wire (see PIPELINE_WB_WR in
   // datapathWires.ts) lights during write-back, alongside WD.
   const wbLit = regionLit.get("WB");
+  // ...and the opcode -> Control wire lights with whichever instruction is
+  // in Decode (every instruction's opcode goes through Control).
+  const controlInColour = regionLit.get("ID")?.colour ?? null;
   const wbWrColour = wbLit && wbLit.wires.includes("MUX3_WD") ? wbLit.colour : null;
   const segmentsToRender = jump ? SEGMENTS : { ...SEGMENTS, ...LEGACY_SEGMENTS };
 
@@ -309,6 +375,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
           PIPELINE_WB_WR.map((piece, i) => (
             <path key={`WB_WR-${i}`} d={piece.d} {...wireProps(wbWrColour, piece.arrow)} />
           ))}
+        {pipeline && <path d={PIPELINE_CONTROL_INPUT.d} {...wireProps(controlInColour, true)} />}
       </g>
 
       {/* ---- Pipeline registers ---- */}
@@ -607,6 +674,11 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
           }
         />
       )}
+
+      {/* ---- Control (pipeline mode) ---- */}
+      {/* Last, so its hover overlay draws over the bars and every other
+      component. */}
+      {pipeline && <ControlUnit />}
 
       {state?.error && (
         <text x={viewWidth / 2} y={pipeline ? PIPELINE_VIEW_Y + PIPELINE_VIEW_HEIGHT - 4 : 575} className="dp-error" textAnchor="middle">

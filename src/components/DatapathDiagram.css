@@ -81,3 +81,93 @@
 .dp-pipeline-bar {
   fill: #c9d3e0;
 }
+/* ---- Control unit (pipeline mode) ----
+ * The oval is always shown; its control lines and the WB/M/EX cells on the
+ * pipeline registers (.dp-ctrl-overlay) appear only while the oval is
+ * hovered or keyboard-focused. Control lines use the same blue as the
+ * existing control labels and ticks.
+ *
+ * Timing comes from two custom properties set per element by
+ * DatapathDiagram.tsx: --d (when the flow from the oval reaches it) and
+ * --t (how long its line takes to draw). */
+.dp-control {
+  outline: none;
+}
+.dp-control-oval {
+  fill: #f2f2f2;
+  cursor: help;
+  transition: fill 0.15s ease;
+}
+.dp-control:hover .dp-control-oval,
+.dp-control:focus-visible .dp-control-oval {
+  fill: #dce6f4;
+}
+.dp-control:focus-visible .dp-control-oval {
+  stroke: #2c5aa0;
+  stroke-width: 2;
+}
+.dp-control text {
+  pointer-events: none;
+}
+
+/* Hidden: fade out quickly, then (once invisible) reset every line to
+ * undrawn so the next hover replays the animation from the oval. */
+.dp-ctrl-overlay {
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.dp-ctrl-draw {
+  fill: none;
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 1;
+  transition: stroke-dashoffset 0s linear 0.15s;
+}
+.dp-ctrl-pop {
+  opacity: 0;
+  transition: opacity 0s linear 0.15s;
+}
+
+/* Shown: each line draws from its start at a constant speed once the flow
+ * reaches it; cells and arrowheads pop in as it arrives. */
+.dp-control:hover .dp-ctrl-overlay,
+.dp-control:focus-visible .dp-ctrl-overlay {
+  opacity: 1;
+  transition: none;
+}
+.dp-control:hover .dp-ctrl-draw,
+.dp-control:focus-visible .dp-ctrl-draw {
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset var(--t) linear var(--d);
+}
+.dp-control:hover .dp-ctrl-pop,
+.dp-control:focus-visible .dp-ctrl-pop {
+  opacity: 1;
+  transition: opacity 0.12s ease var(--d);
+}
+
+.dp-ctrl-halo {
+  stroke: white;
+  stroke-width: 5;
+}
+.dp-ctrl-wire {
+  stroke: #2c5aa0;
+  stroke-width: 1.5;
+}
+.dp-ctrl-arrowhead {
+  fill: #2c5aa0;
+}
+.dp-ctrl-cell {
+  fill: #dce6f4;
+  stroke: #2c5aa0;
+  stroke-width: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dp-control:hover .dp-ctrl-draw,
+  .dp-control:focus-visible .dp-ctrl-draw,
+  .dp-control:hover .dp-ctrl-pop,
+  .dp-control:focus-visible .dp-ctrl-pop {
+    transition: none;
+  }
+}
