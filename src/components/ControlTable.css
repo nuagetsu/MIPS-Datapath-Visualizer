@@ -48,14 +48,42 @@
   cursor: default;
 }
 
+/* Pipeline hazards mode's Fwdop1/Fwdop2 rows (ControlTable.tsx's
+ * ForwardingRow): computed per cycle by the forwarding unit rather than
+ * fixed per instruction kind, so they're set apart from the decoder's
+ * signals above by a dashed rule. */
+.control-table tr:not(.ctrl-fwd-row) + .ctrl-fwd-row td {
+  border-top: 1px dashed #999;
+}
+/* The hazard note under the Fwdop rows: spans the whole table, so it wraps
+ * instead of following the table's nowrap cells. Kept within the scroll
+ * area's visible width by staying sticky at the left edge. "info" explains
+ * a stall the hardware is handling (blue, like the control labels);
+ * "warning" an unresolved load-use hazard (amber). */
+.control-table td.ctrl-fwd-note {
+  white-space: normal;
+  max-width: 28em;
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+}
+.control-table td.ctrl-fwd-note-info {
+  color: #1d3f73;
+  background: #dce6f4;
+}
+.control-table td.ctrl-fwd-note-warning {
+  color: #6b4e00;
+  background: rgba(255, 193, 7, 0.2);
+}
+
 /* Mark colors — same four states as the other tables, applied per-cell and
  * per-header-column (RD(name, op) highlights one cell AND its op's header
  * column, matching the original's _head[op] behavior), PLUS the row label
  * itself (see ControlTable.tsx's ControlRow — derived from whether any
  * cell in the row is currently marked, restoring the original's row-level
- * highlight on top of this port's more precise per-cell one). Only
- * "default"/"success" are reachable on .ctrl-name specifically, since
- * ctrl.ts's cells can no longer be edited (no "warning"/"danger" path).
+ * highlight on top of this port's more precise per-cell one). On
+ * .ctrl-name, "default"/"success" come from ctrl.ts's rows (their cells
+ * can no longer be edited, so no "danger" path), and "warning" only from a
+ * Fwdop row flagging a load-use hazard.
  * Written as combined-class selectors (.ctrl-name.mark-success) so they
  * correctly override .ctrl-name's own unconditional background above —
  * matching selector specificity, not source order. */
@@ -66,6 +94,7 @@
 .ctrl-cell.mark-success,
 .ctrl-name.mark-success { background: rgba(76, 175, 80, 0.15); }
 .ctrl-head.mark-warning,
-.ctrl-cell.mark-warning { background: rgba(255, 193, 7, 0.2); }
+.ctrl-cell.mark-warning,
+.ctrl-name.mark-warning { background: rgba(255, 193, 7, 0.2); }
 .ctrl-head.mark-danger,
 .ctrl-cell.mark-danger  { background: rgba(244, 67, 54, 0.2); }

@@ -18,7 +18,7 @@
  * useMemoryBank, committed to by useMachineHistory). Vals/control table
  * marks are re-derived from each new MachineState — see the effect below.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AceEditorPanel } from "./AceEditorPanel";
 import { useAceEditor, type AceEditorHandle } from "../hooks/useAceEditor";
 import { useRegisterBank } from "../hooks/useRegisterBank";
@@ -29,13 +29,16 @@ import { useMachineHistory } from "../hooks/useMachineHistory";
 import { RegisterTable } from "./RegisterTable";
 import { MemoryTable } from "./MemoryTable";
 import { ValsTable } from "./ValsTable";
-import { ControlTable } from "./ControlTable";
+import { ControlTable, type ForwardingRowsData } from "./ControlTable";
 import { DatapathDiagram, PIPELINE_WIRE_COLOURS } from "./DatapathDiagram";
 import { parseMips } from "../lib/mips-parser";
 import mipsUtil, { check, assemble } from "../lib/mips-parser/mips-util";
 import { int32 } from "../lib/Numbers/int32";
 import { CompileError } from "../lib/Numbers/err";
 import { isKnownOp } from "../lib/mips-machine/ctrl";
+import { computeForwarding, formatFwd, FWD_NONE, FWD_MEM_WB, type ForwardingSignals } from "../lib/mips-machine/forwarding";
+import { isLoadUseHazard, type PipelineSlotView } from "../lib/mips-machine/pipeline";
+import { REGISTERS } from "../lib/mips-machine/registers";
 import type { ProgramLine } from "../lib/mips-machine/interpreter";
 import type { CycleStage } from "../lib/mips-machine/machineState";
 import type { DataDecl, NumNode } from "../lib/mips-parser/ast";
@@ -65,6 +68,63 @@ const STAGE_LABELS: Record<CycleStage, string> = {
   M: "Memory",
   R: "Register Write",
 };
+
+function regName(num: number): string {
+  const name = REGISTERS.find((r) => r.num === num)?.name;
+  return name ? `$${name}` : `$${num}`;
+}
+
+/** Pipeline hazards mode: a one-line explanation of the load-use hazard
+ * handling going on this cycle, for under the Control table's Fwdop rows —
+ * following one hazard from detection, through the stall, to the forward. */
+function hazardNote(
+  slots: PipelineSlotView[],
+  bubbles: CycleStage[],
+  fwd: ForwardingSignals | null,
+): ForwardingRowsData["note"] {
+  const at = (stage: CycleStage) => slots.find((s) => s.stage === stage);
+  const ex = at("A");
+  const id = at("D");
+
+  // 2. The stall cycle: the load has moved on to MEM; IF and ID are held.
+  const heldInId = slots.find((s) => s.stalled && s.stage === "D");
+  if (heldInId) {
+    const load = at("M")?.op ?? "the load";
+    return {
+      kind: "info",
+      text:
+        `Stall: ${heldInId.op} is held in ID (and the next instruction in IF) because PC and IF/ID aren't written ` +
+        `this cycle, and a bubble (nop) enters EX. ${load} is in MEM, reading the data ${heldInId.op} needs.`,
+    };
+  }
+  // 3. The cycle after: the dependent instruction is in EX, the load in WB.
+  if (fwd && bubbles.includes("M") && (fwd.fwdA === FWD_MEM_WB || fwd.fwdB === FWD_MEM_WB)) {
+    return {
+      kind: "info",
+      text: `After the stall: ${fwd.memWb?.op ?? "the load"}'s loaded value is forwarded from MEM/WB to ${fwd.ex.op} (01).`,
+    };
+  }
+  // 1. Detection: a load in EX, an instruction using its target in ID.
+  if (ex && id && isLoadUseHazard(ex.state, id.state)) {
+    return {
+      kind: "info",
+      text:
+        `Hazard detection: ${ex.op} in EX loads ${regName(int32.toNum(ex.state.fields.rt))}, which ${id.op} in ID ` +
+        `uses. Its data won't exist until the end of MEM, so the pipeline stalls for one cycle next.`,
+    };
+  }
+  // Only reachable if hazards mode was switched on mid-run, after the stall
+  // would already have happened.
+  if (fwd && (fwd.loadUseA || fwd.loadUseB)) {
+    return {
+      kind: "warning",
+      text:
+        `Load-use hazard: ${fwd.exMem?.op ?? "the load"}'s data isn't ready until the end of MEM, so it can't be ` +
+        `forwarded to ${fwd.ex.op} yet. A stall was needed a cycle ago.`,
+    };
+  }
+  return null;
+}
 
 /** Direct port of mips.js's load(data) — walks the .data segment and
  * writes its initial contents into memory, one step ahead of assembly.
@@ -128,6 +188,14 @@ export function App() {
   // Off by default so the single-cycle diagram stays the out-of-the-box
   // view.
   const [showPipeline, setShowPipeline] = useState(false);
+  // Pipeline hazards: draws the forwarding unit's hardware (MUX 6, MUX 7,
+  // the dotted EX/MEM and MEM/WB forwarding wires), adds Fwdop1/Fwdop2 to
+  // the Control table, and turns on the hazard detection unit, so load-use
+  // hazards stall the pipeline for a cycle. Toggling it doesn't restart the
+  // run: it only decides whether upcoming cycles may stall. Only offered in
+  // pipeline mode; the choice is remembered while pipeline mode is off.
+  const [showHazards, setShowHazards] = useState(false);
+  const hazards = showPipeline && showHazards;
   const dispContainerRef = useRef<HTMLDivElement>(null);
   const consContainerRef = useRef<HTMLDivElement>(null);
   const dispEditor = useAceEditor(dispContainerRef, { mode: "ace/mode/mips", pcNum: true, write: false });
@@ -143,7 +211,23 @@ export function App() {
   const memBank = useMemoryBank(256);
   const ctrlBank = useCtrlBank();
   const valsBank = useValsBank();
-  const machine = useMachineHistory(program, regBank, memBank, showPipeline);
+  const machine = useMachineHistory(program, regBank, memBank, showPipeline, hazards);
+
+  // This cycle's Fwdop1/Fwdop2, from the instructions in EX, MEM and WB.
+  const forwarding = useMemo(
+    () => (hazards ? computeForwarding(machine.pipelineSlots) : null),
+    [hazards, machine.pipelineSlots],
+  );
+  const forwardingRows: ForwardingRowsData | undefined = hazards
+    ? {
+        op: forwarding?.ex.op ?? null,
+        fwdop1: formatFwd(forwarding?.fwdA ?? FWD_NONE),
+        fwdop2: formatFwd(forwarding?.fwdB ?? FWD_NONE),
+        loadUse1: forwarding?.loadUseA ?? false,
+        loadUse2: forwarding?.loadUseB ?? false,
+        note: hazardNote(machine.pipelineSlots, machine.pipelineBubbles, forwarding),
+      }
+    : undefined;
 
   // keep the latest copies in a ref, updated unconditionally
   // every render (not inside an effect), and have effects read from the
@@ -213,15 +297,15 @@ export function App() {
   useEffect(() => {
     const state = machine.current;
     const { codeEditor, consEditor, valsBank, ctrlBank, programSourceLines, pipelineSlots } = actionsRef.current;
- 
+
     ctrlBank.RES();
     valsBank.RES();
- 
+
     // Before the first step (e.g. right after a reset or a mode switch),
     // clear any pipeline dots left from the previous run.
     if (!state) codeEditor?.markColours([]);
     if (!state || !codeEditor || !consEditor) return;
-    
+
     const editorLine = programSourceLines[state.pc] ?? state.pc; // keep track of line numbers disregarding labels
     if (pipelineSlots.length > 0) {
       // Pipeline mode: a dot per instruction in flight, in the same colour
@@ -244,19 +328,19 @@ export function App() {
       codeEditor.mark(editorLine); // mark gutter of curr instr w red dot
       codeEditor.next(state.stage === "R" ? editorLine : -1);
     }
- 
+
     if (state.error) {
       consEditor.log(state.error);
       codeEditor.err(editorLine);
       setPlaying(false);
       return;
     }
- 
+
     // vals: every key present this step gets repainted as "just updated" —
     for (const [key, bits] of Object.entries(state.vals)) {
       if (bits) valsBank.WR(key, bits);
     }
- 
+
     // ctrl: mark whichever signals this stage actually reads, mirroring
     // exactly which ctrl.RD(name, op) calls mips.js's exec() made per case.
     // Pipeline mode: every instruction in flight reads its own stage's
@@ -305,13 +389,14 @@ export function App() {
               cycle={machine.history.length}
               {(["F", "D", "A", "M", "R"] as CycleStage[]).map((stage) => {
                 const slot = machine.pipelineSlots.find((s) => s.stage === stage);
+                const bubble = machine.pipelineBubbles.includes(stage);
                 return (
                   <span
                     key={stage}
                     style={slot ? { color: PIPELINE_WIRE_COLOURS[slot.seq % PIPELINE_WIRE_COLOURS.length] } : undefined}
                   >
                     {" "}
-                    {stage}:{slot ? `${slot.op}@${slot.pc}` : "-"}
+                    {stage}:{slot ? `${slot.op}@${slot.pc}${slot.stalled ? "(stall)" : ""}` : bubble ? "bubble" : "-"}
                   </span>
                 );
               })}
@@ -386,13 +471,29 @@ export function App() {
             >
               Toggle Pipeline
             </button>
+            {showPipeline && (
+              <button
+                className={showHazards ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
+                onClick={() => setShowHazards((h) => !h)}
+                aria-pressed={showHazards}
+                title={
+                  showHazards
+                    ? "Hide the forwarding unit's muxes, wires and control signals"
+                    : "Show forwarding: MUX 6, the forwarding wires, and Fwdop1/Fwdop2"
+                }
+              >
+                Toggle Pipeline Hazards
+              </button>
+            )}
           </div>
           <div className="app-diagram">
             <DatapathDiagram
               activeWires={machine.current?.activeWires ?? []}
               state={machine.current}
-              features={{ shift: showShift, jump: showJump, pipeline: showPipeline }}
+              features={{ shift: showShift, jump: showJump, pipeline: showPipeline, hazards }}
               pipelineSlots={machine.pipelineSlots}
+              forwarding={forwarding}
+              bubbles={machine.pipelineBubbles}
             />
           </div>
         </section>
@@ -413,7 +514,7 @@ export function App() {
             <section className="app-tables">
               <RegisterTable bank={regBank} />
               <ValsTable bank={valsBank} />
-              <ControlTable bank={ctrlBank} />
+              <ControlTable bank={ctrlBank} forwarding={forwardingRows} />
               <MemoryTable bank={memBank} />
             </section>
           )}

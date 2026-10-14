@@ -5,9 +5,8 @@
  * instruction enters Fetch.
  *
  * Program behavior is identical to the single-cycle mode (useMachineHistory
- * without `pipeline`): an ideal pipeline, with no hazards. This works
- * because each instruction is fully executed ahead of time, at the moment
- * it's fetched, in program order:
+ * without `pipeline`). This works because each instruction is fully
+ * executed ahead of time, at the moment it's fetched, in program order:
  *
  *   - precompute() runs execStage() for all five of its stages in a row,
  *     exactly as the single-cycle runner would, but reading registers and
@@ -26,11 +25,29 @@
  *     (useMachineHistory) to apply, the same "report, don't apply" split
  *     execStage() uses.
  *
+ * Load-use stalls (step(true), the "Pipeline Hazards" mode): the hazard
+ * detection unit from the slides. When a load is in EX and the instruction
+ * in ID names the load's target register as rs or rt —
+ *
+ *   ID/EX.MemRead and ((ID/EX.RegisterRt = IF/ID.RegisterRs)
+ *                   or (ID/EX.RegisterRt = IF/ID.RegisterRt))
+ *
+ * — the next cycle is a stall: PC and IF/ID aren't written, so the
+ * instructions in IF and ID stay where they are (and redo their stage);
+ * the control values entering ID/EX are zeroed, so a bubble (a nop) enters
+ * EX; and everything from EX on advances as usual. A cycle later the
+ * dependent instruction reaches EX with the load in WB, and the forwarding
+ * unit's MEM-hazard rule (01) supplies the loaded value. Stalling changes
+ * only *when* things happen, never the values: those were fixed at fetch.
+ * Like the slides' condition, this is conservative: it also stalls when the
+ * matching rt is the ID instruction's destination rather than a source.
+ *
  * Pure: no React, no banks — reads come in through BaseReaders.
  */
 import { int32, type Int32Bits } from "../Numbers/int32";
 import * as bit from "../Numbers/bit";
 import { canRun, execStage, type MachineInputs, type ProgramLine } from "./interpreter";
+import { ctrlValue, isKnownOp } from "./ctrl";
 import type { CycleStage, MachineState, MemoryWrite, RegisterWrite, ValsSnapshot } from "./machineState";
 import type { WireId } from "./datapath";
 import { unalignedMem, outOfRangeMem, wordIndexOf, byteOffsetOf, getByteBits, setByteBits } from "./memoryWords";
@@ -65,6 +82,9 @@ export interface PipelineSlotView {
   state: MachineState;
   /** Every wire it lights across all five of its stages. */
   wires: WireId[];
+  /** True if it's held in IF or ID by a load-use stall this cycle (it's
+   * redoing the stage it was already in). */
+  stalled: boolean;
 }
 
 export interface CycleEffects {
@@ -80,6 +100,8 @@ export interface CycleEffects {
 
 export interface CycleResult {
   slots: PipelineSlotView[];
+  /** Stages holding a bubble (a nop inserted by a stall) this cycle. */
+  bubbles: CycleStage[];
   effects: CycleEffects;
   /** A single MachineState summarizing the cycle, for the parts of the UI
    * that show one state (header, editor marker, vals table): the
@@ -91,6 +113,16 @@ export interface CycleResult {
 
 function bare(name: string): string {
   return name.startsWith("$") ? name.slice(1) : name;
+}
+
+/** The slides' load-use hazard condition, for a load in EX (`ex`, its
+ * MachineState there) and the instruction in ID (`id`). Exported so the UI
+ * can point out the hazard in the cycle it's detected, before the stall. */
+export function isLoadUseHazard(ex: MachineState, id: MachineState): boolean {
+  if (ex.error || id.error || !isKnownOp(ex.op)) return false;
+  if (ctrlValue("MemRead", ex.op) !== 1) return false;
+  const loadRt = int32.toNum(ex.fields.rt);
+  return loadRt === int32.toNum(id.fields.rs) || loadRt === int32.toNum(id.fields.rt);
 }
 
 // ---- PendingState: committed state + in-flight writes -------------------
@@ -246,6 +278,9 @@ interface Slot extends Precomputed {
   stageIdx: number;
 }
 
+const ID_IDX = 1;
+const EX_IDX = 2;
+
 /** Which vals each stage produces — for merging one cycle's vals across
  * the instructions in flight: the vals table then shows what's on the
  * datapath this cycle (Decode's register reads, the ALU's operands and
@@ -272,6 +307,8 @@ function mergedVals(slots: PipelineSlotView[]): ValsSnapshot {
 
 export class PipelineEngine {
   private slots: Slot[] = [];
+  /** Stage index of each bubble in flight. */
+  private bubbles: number[] = [];
   private nextPc: number | null = 0;
   private seq = 0;
   private halted = false;
@@ -288,22 +325,44 @@ export class PipelineEngine {
     return this.nextPc !== null && canRun(this.program, this.nextPc);
   }
 
+  /** The hazard detection unit, on the current (pre-step) pipeline: a load
+   * in EX that the instruction in ID depends on. */
+  private loadUseHazard(): boolean {
+    const ex = this.slots.find((s) => s.stageIdx === EX_IDX);
+    const id = this.slots.find((s) => s.stageIdx === ID_IDX);
+    const exState = ex?.states[EX_IDX];
+    const idState = id?.states[ID_IDX];
+    return !!exState && !!idState && isLoadUseHazard(exState, idState);
+  }
+
   /** False once every instruction has left the pipeline and there's
    * nothing left to fetch, or after an error. */
   canStep(): boolean {
     return !this.halted && (this.slots.some((s) => s.stageIdx < STAGES.length - 1) || this.canFetch());
   }
 
-  step(): CycleResult | null {
+  /** Runs one clock cycle. With `stallOnLoadUse`, a load-use hazard
+   * detected this cycle makes it a stall cycle (see the header). */
+  step(stallOnLoadUse = false): CycleResult | null {
     if (!this.canStep()) return null;
     const effects: CycleEffects = { regReads: [], memReads: [], memWrites: [], regWrites: [], pc: null };
+    const stall = stallOnLoadUse && this.loadUseHazard();
 
     // Everything in flight advances one stage; whatever just finished
-    // write-back leaves.
-    this.slots = this.slots.map((s) => ({ ...s, stageIdx: s.stageIdx + 1 })).filter((s) => s.stageIdx < STAGES.length);
+    // write-back leaves. On a stall, IF and ID hold (PCWrite = IF/IDWrite =
+    // 0) and a bubble takes the place of the instruction that would have
+    // entered EX.
+    const advances = (stageIdx: number) => !stall || stageIdx >= EX_IDX;
+    this.slots = this.slots
+      .map((s) => (advances(s.stageIdx) ? { ...s, stageIdx: s.stageIdx + 1 } : s))
+      .filter((s) => s.stageIdx < STAGES.length);
+    this.bubbles = this.bubbles.map((b) => b + 1).filter((b) => b < STAGES.length);
+    if (stall) this.bubbles.push(EX_IDX);
 
-    // The next instruction enters Fetch.
-    if (this.canFetch()) {
+    // The next instruction enters Fetch (not on a stall: IF is still busy).
+    if (stall) {
+      // PC holds.
+    } else if (this.canFetch()) {
       const pc = this.nextPc as number;
       const pre = precompute(this.program, pc, this.pending);
       this.slots.push({ seq: this.seq++, pc, stageIdx: 0, ...pre });
@@ -316,7 +375,8 @@ export class PipelineEngine {
       this.pcParked = true;
     }
 
-    // Each in-flight instruction performs its stage.
+    // Each in-flight instruction performs its stage (a held one redoes
+    // it — real hardware re-decodes the instruction in IF/ID too).
     let error: string | null = null;
     let errorSlot: Slot | null = null;
     for (const slot of this.slots) {
@@ -347,10 +407,11 @@ export class PipelineEngine {
       stage: STAGES[s.stageIdx],
       state: s.states[s.stageIdx],
       wires: s.wires,
+      stalled: stall && s.stageIdx < EX_IDX,
     }));
     const oldest = this.slots.reduce((a, b) => (b.stageIdx > a.stageIdx ? b : a));
     const focus = errorSlot ?? oldest;
     const summary: MachineState = { ...focus.states[focus.stageIdx], vals: mergedVals(views), error };
-    return { slots: views, effects, summary, error };
+    return { slots: views, bubbles: this.bubbles.map((b) => STAGES[b]), effects, summary, error };
   }
 }

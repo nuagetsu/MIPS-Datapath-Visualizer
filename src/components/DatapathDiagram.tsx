@@ -72,9 +72,32 @@ import {
   PIPELINE_CONTROL_WIRES,
   PIPELINE_CONTROL_CELLS,
   type Stage,
+  type WireSegment,
 } from "../lib/mips-machine/datapathWires";
+import {
+  HAZARD_MUX6,
+  HAZARD_MUX7,
+  HAZARD_MUX2,
+  HAZARD_FWDOP1_LABEL,
+  HAZARD_FWDOP2_LABEL,
+  HAZARD_ALUSRC_LABEL,
+  HAZARD_ALU1_IN0,
+  HAZARD_MUX6_OUT,
+  HAZARD_RD2_IN0,
+  HAZARD_MUX7_OUT,
+  HAZARD_MUX7_TO_MUX2,
+  HAZARD_IMM_MUX2,
+  HAZARD_STORE_EX,
+  HAZARD_STORE_MEM,
+  FWD_EXMEM,
+  FWD_MEMWB,
+  FWD_EXMEM_TAP,
+  FWD_MEMWB_TAP,
+} from "../lib/mips-machine/datapathHazards";
+import { ctrlValue, isKnownOp } from "../lib/mips-machine/ctrl";
+import { FWD_EX_MEM, FWD_MEM_WB, type ForwardingSignals } from "../lib/mips-machine/forwarding";
 import type { PipelineSlotView } from "../lib/mips-machine/pipeline";
-import type { MachineState } from "../lib/mips-machine/machineState";
+import type { CycleStage, MachineState } from "../lib/mips-machine/machineState";
 import "./DatapathDiagram.css";
 
 /** Which of the two features added on top of processor.js's original
@@ -91,6 +114,11 @@ export interface DatapathFeatures {
    * spreading the stages apart to make room (see the "Pipelined layout"
    * section of datapathWires.ts). Defaults to false. */
   pipeline?: boolean;
+  /** Pipeline mode only: draw the forwarding hardware — MUX 6 before
+   * ALUop1, MUX 7 on the rt line (feeding MUX 2 and the store data), and
+   * the dotted EX/MEM and MEM/WB forwarding wires (see datapathHazards.ts).
+   * Ignored when `pipeline` is off. Defaults to false. */
+  hazards?: boolean;
 }
 
 export interface DatapathDiagramProps {
@@ -109,7 +137,24 @@ export interface DatapathDiagramProps {
    * (PIPELINE_WIRE_COLOURS[seq % 5]). activeWires is not used in pipeline
    * mode. */
   pipelineSlots?: PipelineSlotView[];
+  /** Hazards mode only: this cycle's Fwdop1/Fwdop2 (forwarding.ts's
+   * computeForwarding over the same pipelineSlots), or null when nothing
+   * is in EX. */
+  forwarding?: ForwardingSignals | null;
+  /** Pipeline mode only: stages holding a stall's bubble this cycle
+   * (useMachineHistory's pipelineBubbles), each labelled "(bubble)". */
+  bubbles?: CycleStage[];
 }
+
+/** Where to label a bubble, per stage, in pipelined coordinates: inside the
+ * ALU under its name, inside Data Memory between its Address and Read Data
+ * labels, and above MUX 3. A bubble in IF or ID can't happen (a stall
+ * holds those stages instead). */
+const BUBBLE_LABEL_AT: Partial<Record<CycleStage, { x: number; y: number }>> = {
+  A: { x: 450 + PIPELINE_OFFSET.EX + 50, y: 340 },
+  M: { x: 650 + PIPELINE_OFFSET.MEM + 50, y: 400 },
+  R: { x: 795 + PIPELINE_OFFSET.WB, y: 410 },
+};
 
 /** Which stage region of the pipelined diagram each micro-step lights. */
 const REGION_OF_STEP: Record<string, Stage> = { F: "IF", D: "ID", A: "EX", M: "MEM", R: "WB" };
@@ -242,10 +287,13 @@ function ControlUnit() {
   );
 }
 
-export function DatapathDiagram({ activeWires, state, features, pipelineSlots }: DatapathDiagramProps) {
+export function DatapathDiagram({ activeWires, state, features, pipelineSlots, forwarding, bubbles }: DatapathDiagramProps) {
   const shift = features?.shift ?? true;
   const jump = features?.jump ?? true;
   const pipeline = features?.pipeline ?? false;
+  // Forwarding hardware only exists in the pipelined drawing.
+  const hazards = pipeline && (features?.hazards ?? false);
+  const fwd = hazards ? (forwarding ?? null) : null;
 
   // Per-stage horizontal shift for component groups. All zero when
   // pipelining is off, so the single-cycle layout is exactly as before.
@@ -277,6 +325,20 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
     return keys;
   };
 
+  // Hazards mode: which forwarding paths are actually in use this cycle.
+  // A Fwdop value only matters if the EX instruction actually uses that
+  // register's value: Fwdop1 when ALUop1 is RD1 (RD1_ALU1); Fwdop2 when rt
+  // goes to the ALU through MUX 2 (RD2_MUX2) or to Data Memory as store data
+  // (MemWrite: sw/sb). For other I-types rt is the destination, not a
+  // source, so their Fwdop2 is computed but unused.
+  const exSlot = hazards ? pipelineSlots?.find((s) => s.stage === "A") : undefined;
+  const exWires = exSlot?.wires ?? [];
+  const usesRd1 = exWires.includes("RD1_ALU1");
+  const usesRtAlu = exWires.includes("RD2_MUX2");
+  const usesRtStore = !!exSlot && isKnownOp(exSlot.op) && ctrlValue("MemWrite", exSlot.op) === 1;
+  const fwdA = fwd && usesRd1 ? fwd.fwdA : 0;
+  const fwdB = fwd && (usesRtAlu || usesRtStore) ? fwd.fwdB : 0;
+
   // Single-cycle mode: a whole segment lights, red, when its wire is
   // active this micro-step.
   const active = pipeline ? new Set<string>() : litKeys(activeWires);
@@ -286,8 +348,19 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
   const regionLit = new Map<Stage, { keys: Set<string>; wires: WireId[]; colour: number }>();
   if (pipeline) {
     for (const slot of pipelineSlots ?? []) {
-      regionLit.set(REGION_OF_STEP[slot.stage], {
-        keys: litKeys(slot.wires),
+      const region = REGION_OF_STEP[slot.stage];
+      // A forwarded operand doesn't come along its usual route from ID/EX,
+      // so that route stays dark and the dotted wire lights instead. For rt
+      // that's both of RD2's uses (ALU and store data): they share the run
+      // from ID/EX into MUX 7.
+      let lightWires = slot.wires;
+      if (fwd && slot.seq === fwd.ex.seq) {
+        lightWires = slot.wires.filter(
+          (w) => !(w === "RD1_ALU1" && fwdA !== 0) && !((w === "RD2_MUX2" || w === "RD2_MWD") && fwdB !== 0),
+        );
+      }
+      regionLit.set(region, {
+        keys: litKeys(lightWires),
         wires: slot.wires,
         colour: slot.seq % PIPELINE_WIRE_COLOURS.length,
       });
@@ -310,6 +383,35 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
       : undefined,
   });
 
+  // Hazards mode colours. MUX 6's output carries the EX instruction's
+  // ALUop1 whichever input is selected. Each dotted forwarding wire
+  // carries the *producing* instruction's result, so it's drawn in that
+  // instruction's colour: EX/MEM's is the instruction in MEM, MEM/WB's the
+  // instruction in WB.
+  const exColour = regionLit.get("EX")?.colour ?? null;
+  const mux6OutColour = usesRd1 ? exColour : null;
+  // MUX 7's output carries rt whichever input is selected: to MUX 2 when
+  // the ALU uses it, and down to EX/MEM as store data (lit for every
+  // instruction, matching the single-cycle view's RD2_MWD).
+  const usesRtStoreLine = exWires.includes("RD2_MWD");
+  const mux7OutColour = usesRtAlu || usesRtStoreLine ? exColour : null;
+  const mux7ToMux2Colour = usesRtAlu ? exColour : null;
+  const storeExColour = usesRtStoreLine ? exColour : null;
+  const exMemColour = fwd?.exMem ? fwd.exMem.seq % PIPELINE_WIRE_COLOURS.length : null;
+  const memWbColour = fwd?.memWb ? fwd.memWb.seq % PIPELINE_WIRE_COLOURS.length : null;
+  const fwdWireProps = (colour: number | null, lit: boolean, arrow: boolean) => {
+    const on = lit && colour !== null;
+    return {
+      className: on ? "dp-wire dp-fwd-wire dp-fwd-wire-active" : "dp-wire dp-fwd-wire",
+      style: on ? { stroke: PIPELINE_WIRE_COLOURS[colour] } : undefined,
+      markerEnd: arrow ? `url(#${on ? `dp-arrow-p${colour}` : "dp-arrow-fwd"})` : undefined,
+    };
+  };
+  const forwardPaths = [
+    { key: "exmem", wire: FWD_EXMEM, colour: exMemColour, sel: FWD_EX_MEM, tap: FWD_EXMEM_TAP },
+    { key: "memwb", wire: FWD_MEMWB, colour: memWbColour, sel: FWD_MEM_WB, tap: FWD_MEMWB_TAP },
+  ];
+
   // Segments to hide entirely when a feature is off, and — for jump only
   // — the legacy segment to substitute back in. Shift needs no
   // substitute: disabling it just means SHAMT_ALU2 never renders and
@@ -317,6 +419,11 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
   const hiddenSegments = new Set<string>();
   if (!shift) hiddenSegments.add("SHAMT_ALU2");
   if (!jump) ["MUX4_MUX5", "JADDR_LS", "LS_MUX5", "MUX5_PC"].forEach((k) => hiddenSegments.add(k));
+  // Hazards mode: the wires around MUX 2 are redrawn for the forwarding
+  // layout (datapathHazards.ts): RD1 stops at MUX 6; RD2 stops at MUX 7,
+  // whose output feeds MUX 2 and the store data line; the immediate runs
+  // to MUX 2's new position.
+  if (hazards) ["_ALU1", "_RD2", "_2MUX2", "MWD_", "_MWD_", "_MWD", "_1MUX2"].forEach((k) => hiddenSegments.add(k));
   // Pipeline mode's MEM/WB -> WR wire (see PIPELINE_WB_WR in
   // datapathWires.ts) lights during write-back, alongside WD.
   const wbLit = regionLit.get("WB");
@@ -325,6 +432,10 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
   const controlInColour = regionLit.get("ID")?.colour ?? null;
   const wbWrColour = wbLit && wbLit.wires.includes("MUX3_WD") ? wbLit.colour : null;
   const segmentsToRender = jump ? SEGMENTS : { ...SEGMENTS, ...LEGACY_SEGMENTS };
+
+  // A load-use stall this cycle: PC and IF/ID aren't written (PCWrite =
+  // IF/IDWrite = 0), so both are drawn as held.
+  const held = pipeline && (pipelineSlots ?? []).some((s) => s.stalled);
 
   // The instruction-field column shows the instruction being decoded — in
   // pipeline mode, whichever one is in Decode this cycle.
@@ -339,6 +450,31 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
     { name: "funct", idx: 0, len: 6, y: 500 },
   ];
 
+  // Hazards-mode wires drawn in place of hidden segments. Pieces that a
+  // segment key fully describes take their colour the usual way; the rest
+  // were coloured above.
+  const hazardWires: { key: string; seg: WireSegment; colour: number | null }[] = hazards
+    ? [
+        { key: "alu1-in0", seg: HAZARD_ALU1_IN0, colour: pieceColour("_ALU1", HAZARD_ALU1_IN0) },
+        { key: "mux6-out", seg: HAZARD_MUX6_OUT, colour: mux6OutColour },
+        { key: "rd2-in0", seg: HAZARD_RD2_IN0, colour: pieceColour("_RD2", HAZARD_RD2_IN0) },
+        { key: "mux7-out", seg: HAZARD_MUX7_OUT, colour: mux7OutColour },
+        { key: "mux7-mux2", seg: HAZARD_MUX7_TO_MUX2, colour: mux7ToMux2Colour },
+        { key: "imm-mux2", seg: HAZARD_IMM_MUX2, colour: pieceColour("_1MUX2", HAZARD_IMM_MUX2) },
+        { key: "store-ex", seg: HAZARD_STORE_EX, colour: storeExColour },
+        { key: "store-mem", seg: HAZARD_STORE_MEM, colour: pieceColour("_MWD", HAZARD_STORE_MEM) },
+      ]
+    : [];
+  const muxBox = (m: { x: number; y: number; width: number; height: number }, label: string) => (
+    <>
+      <rect x={m.x} y={m.y} width={m.width} height={m.height} rx={7.5} className="dp-box" fill="#f2f2f2" />
+      <KonvaLabel spec={{ text: label, x: m.x, y: m.y, width: m.width, height: m.height, align: "center", vAlign: "middle", bold: true, fontSize: 11 }} />
+    </>
+  );
+  const ctrlLabel = (box: { x: number; y: number; width: number; height: number }, text: string) => (
+    <KonvaLabel spec={{ ...box, text, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" }} />
+  );
+
   return (
     <svg className="datapath-diagram" viewBox={`0 ${viewY} ${viewWidth} ${viewHeight}`} xmlns="http://www.w3.org/2000/svg">
       <defs>
@@ -351,12 +487,34 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
         <marker id="dp-arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" className="dp-arrowhead-blue" />
         </marker>
+        <marker id="dp-arrow-fwd" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" className="dp-arrowhead-fwd" />
+        </marker>
         {PIPELINE_WIRE_COLOURS.map((colour, i) => (
           <marker key={colour} id={`dp-arrow-p${i}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" style={{ fill: colour }} />
           </marker>
         ))}
       </defs>
+
+      {/* ---- Forwarding wires (hazards mode) ---- */}
+      {/* Drawn before everything else, so every solid wire, bar and
+      component passes over them: they run behind the diagram. */}
+      {hazards && (
+        <g className="dp-fwd-wires">
+          {forwardPaths.map(({ key, wire, colour, sel }) => {
+            const toMux6 = fwdA === sel;
+            const toMux7 = fwdB === sel;
+            return (
+              <g key={key}>
+                <path d={wire.trunk.d} {...fwdWireProps(colour, toMux6 || toMux7, false)} />
+                <path d={wire.toMux6.d} {...fwdWireProps(colour, toMux6, true)} />
+                <path d={wire.toMux7.d} {...fwdWireProps(colour, toMux7, true)} />
+              </g>
+            );
+          })}
+        </g>
+      )}
 
       {/* ---- Wires (drawn first, so component boxes sit on top) ---- */}
       <g className="dp-wires">
@@ -376,7 +534,26 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
             <path key={`WB_WR-${i}`} d={piece.d} {...wireProps(wbWrColour, piece.arrow)} />
           ))}
         {pipeline && <path d={PIPELINE_CONTROL_INPUT.d} {...wireProps(controlInColour, true)} />}
+        {hazardWires.map(({ key, seg, colour }) => (
+          <path key={key} d={seg.d} {...wireProps(colour, seg.arrow)} />
+        ))}
       </g>
+
+      {/* Where the forwarding wires tap their source wires. */}
+      {hazards &&
+        forwardPaths.map(({ key, colour, sel, tap }) => {
+          const on = (fwdA === sel || fwdB === sel) && colour !== null;
+          return (
+            <circle
+              key={`${key}-tap`}
+              cx={tap.x}
+              cy={tap.y}
+              r={3}
+              className="dp-fwd-tap"
+              style={on ? { fill: PIPELINE_WIRE_COLOURS[colour] } : undefined}
+            />
+          );
+        })}
 
       {/* ---- Pipeline registers ---- */}
       {/* Drawn after the wires so each bar sits on top of them; the wires
@@ -386,7 +563,15 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
         <g className="dp-pipeline-bars">
           {PIPELINE_BARS.map((b) => (
             <g key={b.label}>
-              <rect x={b.x} y={b.top} width={b.width} height={b.bottom - b.top} className="dp-box dp-pipeline-bar" />
+              <rect
+                x={b.x}
+                y={b.top}
+                width={b.width}
+                height={b.bottom - b.top}
+                className={held && b.label === "IF/ID" ? "dp-box dp-pipeline-bar dp-held" : "dp-box dp-pipeline-bar"}
+              >
+                {held && b.label === "IF/ID" && <title>Stalled: IF/ID keeps its contents this cycle (IF/IDWrite = 0)</title>}
+              </rect>
               <KonvaLabel
                 spec={{ text: b.label, x: b.x - 30, y: b.top - 17, width: b.width + 60, height: 14, align: "center", bold: true, fontSize: 11 }}
               />
@@ -426,7 +611,9 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
 
       {/* ---- PC ---- */}
       <g transform={ifShift(PIPELINE_IF.pcDx)}>
-        <rect x={130} y={15} width={40} height={60} className="dp-box" fill="#d7dce2" />
+        <rect x={130} y={15} width={40} height={60} className={held ? "dp-box dp-held" : "dp-box"} fill="#d7dce2">
+          {held && <title>Stalled: PC keeps its value this cycle (PCWrite = 0)</title>}
+        </rect>
         <KonvaLabel spec={{ text: "PC", x: 135, y: 20, width: 30, height: 50, align: "center", vAlign: "middle", bold: true }} />
       </g>
 
@@ -587,16 +774,40 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
       )}
 
       {/* ---- MUX 2 (ALUSrc) ---- */}
-      <g transform={stageShift("EX")}>
-        <rect x={390} y={355} width={30} height={75} rx={7.5} className="dp-box" fill="#f2f2f2" />
-        <KonvaLabels
-          specs={[
-            { text: "MUX 2", x: 390, y: 360, width: 30, height: 70, align: "center", vAlign: "middle", bold: true },
-            { text: "ALUSrc", x: 370, y: 435, width: 70, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
-          ]}
-        />
-        <CtrlTick x={405} y1={430} y2={440} />
-      </g>
+      {!hazards && (
+        <g transform={stageShift("EX")}>
+          <rect x={390} y={355} width={30} height={75} rx={7.5} className="dp-box" fill="#f2f2f2" />
+          <KonvaLabels
+            specs={[
+              { text: "MUX 2", x: 390, y: 360, width: 30, height: 70, align: "center", vAlign: "middle", bold: true },
+              { text: "ALUSrc", x: 370, y: 435, width: 70, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
+            ]}
+          />
+          <CtrlTick x={405} y1={430} y2={440} />
+        </g>
+      )}
+
+      {/* ---- Forwarding muxes (hazards mode) ---- */}
+      {/* Pipelined coordinates (datapathHazards.ts), so no stage transform.
+      MUX 6 (Fwdop1) selects ALUop1 and MUX 7 (Fwdop2) selects rt, each
+      from 00 = ID/EX, 10 = EX/MEM's ALU result, 01 = MUX 3's write-back
+      value. MUX 7's output feeds both MUX 2 (ALUSrc) and the store data
+      line, so a forwarded rt reaches the ALU and Data Memory alike. */}
+      {hazards && (
+        <g>
+          {muxBox(HAZARD_MUX6, "MUX 6")}
+          {ctrlLabel(HAZARD_FWDOP1_LABEL, "Fwdop1")}
+          <CtrlTick x={HAZARD_MUX6.x + HAZARD_MUX6.width / 2} y1={HAZARD_FWDOP1_LABEL.y + HAZARD_FWDOP1_LABEL.height + 1} y2={HAZARD_MUX6.y} />
+
+          {muxBox(HAZARD_MUX7, "MUX 7")}
+          {ctrlLabel(HAZARD_FWDOP2_LABEL, "Fwdop2")}
+          <CtrlTick x={HAZARD_MUX7.x + HAZARD_MUX7.width / 2} y1={HAZARD_FWDOP2_LABEL.y + HAZARD_FWDOP2_LABEL.height + 1} y2={HAZARD_MUX7.y} />
+
+          {muxBox(HAZARD_MUX2, "MUX 2")}
+          {ctrlLabel(HAZARD_ALUSRC_LABEL, "ALUSrc")}
+          <CtrlTick x={HAZARD_MUX2.x + HAZARD_MUX2.width / 2} y1={HAZARD_MUX2.y + HAZARD_MUX2.height} y2={HAZARD_MUX2.y + HAZARD_MUX2.height + 10} />
+        </g>
+      )}
 
       {/* ---- MUX 3 (MemToReg) ---- */}
       <g transform={stageShift("WB")}>
@@ -674,6 +885,20 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots }:
           }
         />
       )}
+
+      {/* ---- Bubbles (pipeline mode) ---- */}
+      {/* A stall's nop, labelled in each stage it passes through. */}
+      {pipeline &&
+        (bubbles ?? []).map((stage) => {
+          const at = BUBBLE_LABEL_AT[stage];
+          return (
+            at && (
+              <text key={stage} x={at.x} y={at.y} className="dp-bubble" textAnchor="middle">
+                (bubble)
+              </text>
+            )
+          );
+        })}
 
       {/* ---- Control (pipeline mode) ---- */}
       {/* Last, so its hover overlay draws over the bars and every other

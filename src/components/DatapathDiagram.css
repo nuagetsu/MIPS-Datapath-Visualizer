@@ -74,12 +74,55 @@
 .dp-arrowhead-blue {
   fill: #2c5aa0;
 }
+
+/* ---- Forwarding wires (pipeline hazards mode) ----
+ * The EX/MEM and MEM/WB forwarding paths into MUX 6 and MUX 2 (see
+ * datapathHazards.ts). Dashed and drawn under everything else, so they read
+ * as running behind the diagram. Unlit they're a muted grey; lit they take
+ * the colour of the instruction whose result is being forwarded, and the
+ * dashes flow toward the muxes. */
+.dp-fwd-wire {
+  stroke: #9a9a9a;
+  stroke-width: 1.75;
+  stroke-dasharray: 5 4;
+}
+.dp-fwd-wire-active {
+  stroke-width: 2.5;
+  animation: dp-fwd-flow 0.6s linear infinite;
+}
+@keyframes dp-fwd-flow {
+  to {
+    stroke-dashoffset: -9;
+  }
+}
+.dp-arrowhead-fwd {
+  fill: #9a9a9a;
+}
+/* Junctions where the forwarding wires leave their source wires. */
+.dp-fwd-tap {
+  fill: #9a9a9a;
+}
+
 /* ---- Pipeline registers (IF/ID, ID/EX, EX/MEM, MEM/WB) ----
  * Only rendered when the "Pipeline" toggle is on. With it on the viewBox
  * widens from 900 to 1320 (PIPELINE_VIEW_WIDTH in datapathWires.ts) — the
  * sizing rules above already scale the drawing to fit either way. */
 .dp-pipeline-bar {
   fill: #c9d3e0;
+}
+/* A load-use stall: PC and IF/ID are held (not written) this cycle. The
+ * amber matches the Control table's hazard marks. (This overrides PC's own
+ * fill attribute: presentation attributes lose to any CSS rule.) */
+.dp-held {
+  fill: #ffe08a;
+  stroke: #b8860b;
+  stroke-width: 2;
+}
+/* A stall's bubble (nop), labelled in the stage it occupies. */
+.dp-bubble {
+  font-size: 11px;
+  font-style: italic;
+  fill: #8a8a8a;
 }
 /* ---- Control unit (pipeline mode) ----
  * The oval is always shown; its control lines and the WB/M/EX cells on the
@@ -167,7 +210,9 @@
   .dp-control:hover .dp-ctrl-draw,
   .dp-control:focus-visible .dp-ctrl-draw,
   .dp-control:hover .dp-ctrl-pop,
-  .dp-control:focus-visible .dp-ctrl-pop {
+  .dp-control:focus-visible .dp-ctrl-pop,
+  .dp-fwd-wire-active {
     transition: none;
+    animation: none;
   }
 }

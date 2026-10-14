@@ -25,6 +25,11 @@
  * Switching modes mid-run isn't meaningful (a half-executed instruction
  * has no pipelined equivalent), so callers should reset() when toggling.
  *
+ * `stallOnLoadUse` (pipeline mode only): the hazard detection unit — a
+ * load-use hazard stalls the pipeline for a cycle (see pipeline.ts). It's
+ * read on every step, so it can be toggled mid-run: it only decides whether
+ * the *next* cycle may stall.
+ *
  * NOTE on reset(): mirrors mips.js's RES() exactly — it clears this hook's
  * own bookkeeping (pc/stage/vals/history) but does NOT zero register or
  * memory values, since RES() in the original never did either (it only
@@ -53,6 +58,8 @@ export interface MachineHistory {
    * In pipeline mode `current` is a one-state summary of the same cycle
    * (see pipeline.ts's CycleResult.summary). */
   pipelineSlots: PipelineSlotView[];
+  /** Pipeline mode only: stages holding a stall's bubble this cycle. */
+  pipelineBubbles: CycleStage[];
   /** Runs exactly one F/D/A/M/R micro-step (pipeline mode: one clock
    * cycle) and appends it to history. */
   step: () => void;
@@ -66,6 +73,7 @@ export function useMachineHistory(
   regBank: RegisterBank,
   memBank: MemoryBank,
   pipeline = false,
+  stallOnLoadUse = false,
 ): MachineHistory {
   const pcRef = useRef(0); // pcRef is just the index for programLine array, not the byte addressing of the pc
   const stageIdxRef = useRef(0);
@@ -76,6 +84,7 @@ export function useMachineHistory(
   // runs the current program.
   const engineRef = useRef<PipelineEngine | null>(null);
   const [pipelineSlots, setPipelineSlots] = useState<PipelineSlotView[]>([]);
+  const [pipelineBubbles, setPipelineBubbles] = useState<CycleStage[]>([]);
 
   const stepPipeline = useCallback((): void => {
     if (haltedRef.current) return;
@@ -86,7 +95,7 @@ export function useMachineHistory(
         memSize: memBank.size,
       });
     }
-    const result: CycleResult | null = engineRef.current.step();
+    const result: CycleResult | null = engineRef.current.step(stallOnLoadUse);
     if (!result) {
       haltedRef.current = true;
       return;
@@ -122,9 +131,10 @@ export function useMachineHistory(
     }
 
     setPipelineSlots(result.slots);
+    setPipelineBubbles(result.bubbles);
     setHistory((prev) => [...prev, { ...result.summary, error }]);
     if (error) haltedRef.current = true;
-  }, [program, regBank, memBank]);
+  }, [program, regBank, memBank, stallOnLoadUse]);
 
   const stepSingle = useCallback((): void => {
     if (haltedRef.current || !canRun(program, pcRef.current)) {
@@ -187,6 +197,7 @@ export function useMachineHistory(
     haltedRef.current = false;
     engineRef.current = null;
     setPipelineSlots([]);
+    setPipelineBubbles([]);
     setHistory([]);
     regBank.WR("pc", int32.num(0));
   }, [regBank]);
@@ -195,6 +206,7 @@ export function useMachineHistory(
     history,
     current: history.length > 0 ? history[history.length - 1] : null,
     pipelineSlots,
+    pipelineBubbles,
     canStep:
       !haltedRef.current &&
       (pipeline
