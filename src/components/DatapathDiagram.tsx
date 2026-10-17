@@ -158,11 +158,14 @@ export interface DatapathFeatures {
   pipeline?: boolean;
   /** Pipeline mode only: draw the hazard hardware — in EX, MUX 6 before
    * ALUop1, MUX 7 on the rt line (feeding MUX 2 and the store data) and
-   * the dotted EX/MEM and MEM/WB forwarding wires (datapathHazards.ts); and
-   * the early-branch datapath, with branches resolved in ID and MUX 4/5 in
-   * IF (datapathBranch.ts, which also re-lays out the whole diagram to make
-   * room). Ignored when `pipeline` is off. Defaults to false. */
+   * the dotted EX/MEM and MEM/WB forwarding wires (datapathHazards.ts).
+   * Ignored when `pipeline` is off. Defaults to false. */
   hazards?: boolean;
+  /** Hazards mode only: the early-branch datapath, with branches resolved
+   * in ID and MUX 4/5 in IF (datapathBranch.ts, which also re-lays out the
+   * whole diagram to make room). Off, branches resolve at MUX 4/5 after
+   * EX/MEM, as in the plain pipelined diagram. Defaults to false. */
+  earlyBranch?: boolean;
 }
 
 export interface DatapathDiagramProps {
@@ -204,6 +207,13 @@ const BUBBLE_LABEL_AT: Partial<Record<CycleStage, { x: number; y: number }>> = {
   M: { x: 650 + PIPELINE_OFFSET.MEM + 50, y: 400 },
   R: { x: 795 + PIPELINE_OFFSET.WB, y: 410 },
 };
+
+/** Hazards mode without early branches: the PC-update segments after EX/MEM
+ * (see pieceColour). */
+const PC_UPDATE_KEYS = new Set(["_MUX4", "ADD2_MUX4", "MUX4_MUX5", "MUX5_PC", "MUX4_PC", "JADDR_LS", "LS_MUX5"]);
+
+/** The pipeline register a flushed instruction in each stage is zeroed in. */
+const FLUSH_BAR_AFTER: Partial<Record<CycleStage, string>> = { F: "IF/ID", D: "ID/EX", A: "EX/MEM" };
 
 /** Which stage region of the pipelined diagram each micro-step lights. */
 const REGION_OF_STEP: Record<string, Stage> = { F: "IF", D: "ID", A: "EX", M: "MEM", R: "WB" };
@@ -356,21 +366,22 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   const pipeline = features?.pipeline ?? false;
   // Forwarding hardware only exists in the pipelined drawing.
   const hazards = pipeline && (features?.hazards ?? false);
+  const early = hazards && (features?.earlyBranch ?? false);
   const fwd = hazards ? (forwarding ?? null) : null;
-  const brFwd = hazards ? (branchForwarding ?? null) : null;
+  const brFwd = early ? (branchForwarding ?? null) : null;
 
-  // Hazards mode re-lays out the pipelined diagram for the early-branch
+  // Early-branch mode re-lays out the pipelined diagram for the early-branch
   // hardware (datapathBranch.ts): X/P remap x coordinates and paths, and
   // hzShift moves a component group anchored at pipelined x. All three are
   // the identity otherwise.
-  const X = (x: number) => (hazards ? hazardX(x) : x);
-  const P = (d: string) => (hazards ? remapPath(d) : d);
-  const hzShift = (anchorX: number) => (hazards ? `translate(${hazardDx(anchorX)} 0)` : undefined);
+  const X = (x: number) => (early ? hazardX(x) : x);
+  const P = (d: string) => (early ? remapPath(d) : d);
+  const hzShift = (anchorX: number) => (early ? `translate(${hazardDx(anchorX)} 0)` : undefined);
 
   // Per-stage horizontal shift for component groups. All zero when
   // pipelining is off, so the single-cycle layout is exactly as before.
   const stageShift = (stage: Stage) => (pipeline ? `translate(${PIPELINE_OFFSET[stage]} 0)` : undefined);
-  const viewWidth = hazards ? HAZARD_VIEW_WIDTH : pipeline ? PIPELINE_VIEW_WIDTH : 900;
+  const viewWidth = early ? HAZARD_VIEW_WIDTH : pipeline ? PIPELINE_VIEW_WIDTH : 900;
   const viewHeight = pipeline ? PIPELINE_VIEW_HEIGHT : 620;
   const regDstMux = PIPELINE_REGDST_MUX;
   // MUX 4 / MUX 5 move left to just after EX/MEM in pipeline mode.
@@ -423,7 +434,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       const region = REGION_OF_STEP[slot.stage];
       // Early branches: a branch or jump is finished once it leaves ID, and
       // passes through EX, MEM and WB as a no-op.
-      if (hazards && (isBranchOp(slot.op) || isJumpOp(slot.op)) && region !== "IF" && region !== "ID") continue;
+      if (early && (isBranchOp(slot.op) || isJumpOp(slot.op)) && region !== "IF" && region !== "ID") continue;
       // A forwarded operand doesn't come along its usual route from ID/EX,
       // so that route stays dark and the dotted wire lights instead. For rt
       // that's both of RD2's uses (ALU and store data): they share the run
@@ -447,7 +458,12 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
    * stage region, if that instruction uses this segment. */
   const pieceColour = (key: string, piece: { stage?: Stage }): number | null => {
     if (!pipeline) return active.has(key) ? 0 : null;
-    const lit = piece.stage ? regionLit.get(piece.stage) : undefined;
+    // Hazards mode without early branches: branches and jumps resolve in
+    // MEM, so the PC update after EX/MEM (normally drawn with the
+    // instruction in WB, as in the single-cycle view) lights with the
+    // instruction in MEM.
+    const stage = hazards && !early && piece.stage === "WB" && PC_UPDATE_KEYS.has(key) ? "MEM" : piece.stage;
+    const lit = stage ? regionLit.get(stage) : undefined;
     return lit && lit.keys.has(key) ? lit.colour : null;
   };
   const wireProps = (colour: number | null, arrow: boolean) => ({
@@ -499,10 +515,10 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   // whose output feeds MUX 2 and the store data line; the immediate runs
   // to MUX 2's new position.
   if (hazards) ["_ALU1", "_RD2", "_2MUX2", "MWD_", "_MWD_", "_MWD", "_1MUX2"].forEach((k) => hiddenSegments.add(k));
-  // ...and the PC-update wiring is replaced by the early-branch version:
-  // PC+4 no longer travels past ID, the branch adder and shifter move to ID,
-  // and MUX 4/5 move to IF.
-  if (hazards) {
+  // ...and with early branches the PC-update wiring is replaced: PC+4 no
+  // longer travels past ID, the branch adder and shifter move to ID, and
+  // MUX 4/5 move to IF.
+  if (early) {
     ["ADD1_", "_MUX4", "_ADD2", "LS_ADD2", "ADD2_MUX4", "MUX4_MUX5", "MUX5_PC", "MUX4_PC", "JADDR_LS", "LS_MUX5", "_LS"].forEach((k) =>
       hiddenSegments.add(k),
     );
@@ -559,7 +575,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   );
 
   // ---- Early-branch lighting (hazards mode) ----
-  const slotAt = (stage: CycleStage) => (hazards ? pipelineSlots?.find((s) => s.stage === stage) : undefined);
+  const slotAt = (stage: CycleStage) => (early ? pipelineSlots?.find((s) => s.stage === stage) : undefined);
   const colourOf = (s: PipelineSlotView | null | undefined) => (s ? s.seq % PIPELINE_WIRE_COLOURS.length : null);
   const ifSlot = slotAt("F");
   const idSlot = slotAt("D");
@@ -570,12 +586,12 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   // else PC+4 of the instruction in IF (predict not taken). A stall writes
   // no PC.
   const pcSource: "jump" | "branch" | "seq" | null =
-    !hazards || held ? null : idJump ? "jump" : branchTaken ? "branch" : ifSlot ? "seq" : null;
+    !early || held ? null : idJump ? "jump" : branchTaken ? "branch" : ifSlot ? "seq" : null;
   const pcColour = colourOf(pcSource === "jump" ? idJump : pcSource === "branch" ? idBranch : pcSource === "seq" ? ifSlot : null);
   const branchColour = colourOf(idBranch);
   const fwdRd1 = brFwd?.fwdRd1 ?? FWD_NONE;
   const fwdRd2 = brFwd?.fwdRd2 ?? FWD_NONE;
-  const branchWires: { key: string; seg: WireSegment; colour: number | null }[] = hazards
+  const branchWires: { key: string; seg: WireSegment; colour: number | null }[] = early
     ? [
         { key: "pc4-mux4", seg: BR_PC4_TO_MUX4, colour: pcSource === "seq" ? pcColour : null },
         { key: "pc4-latch-if", seg: BR_PC4_LATCH_IF, colour: colourOf(ifSlot) },
@@ -651,7 +667,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
               </g>
             );
           })}
-          {idForwardPaths.map(({ key, wire, colour, sel }) => {
+          {early && idForwardPaths.map(({ key, wire, colour, sel }) => {
             const toRd1 = fwdRd1 === sel;
             const toRd2 = fwdRd2 === sel;
             return (
@@ -708,7 +724,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
             />
           );
         })}
-      {hazards && (
+      {early && (
         <circle
           cx={BR_FWD_MEMWB_TAP.x}
           cy={BR_FWD_MEMWB_TAP.y}
@@ -722,7 +738,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
         />
       )}
       {/* Junctions on the early-branch wiring's source wires. */}
-      {hazards && BR_TAPS.map(([x, y]) => <circle key={`br-tap-${x}-${y}`} cx={x} cy={y} r={2.5} className="dp-junction" />)}
+      {early && BR_TAPS.map(([x, y]) => <circle key={`br-tap-${x}-${y}`} cx={x} cy={y} r={2.5} className="dp-junction" />)}
 
       {/* ---- Pipeline registers ---- */}
       {/* Drawn after the wires so each bar sits on top of them; the wires
@@ -734,8 +750,10 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
             // Hazards mode: remapped, and (except MEM/WB, which already
             // starts lower) starting lower to leave the lanes back to MUX 4
             // room above.
-            const b = { ...bar, x: X(bar.x), top: hazards && bar.label !== "MEM/WB" ? HAZARD_BAR_TOP : bar.top };
-            const flushing = hazards && b.label === "IF/ID" && (pipelineSlots ?? []).some((s) => s.flushed);
+            const b = { ...bar, x: X(bar.x), top: early && bar.label !== "MEM/WB" ? HAZARD_BAR_TOP : bar.top };
+            // A flush zeroes the pipeline register after each flushed
+            // instruction's stage (IF.Flush, ID.Flush, EX.Flush).
+            const flushing = hazards && (pipelineSlots ?? []).some((s) => s.flushed && FLUSH_BAR_AFTER[s.stage] === b.label);
             return (
               <g key={b.label}>
                 <rect
@@ -752,7 +770,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
                   }
                 >
                   {held && b.label === "IF/ID" && <title>Stalled: IF/ID keeps its contents this cycle (IF/IDWrite = 0)</title>}
-                  {flushing && <title>Flush: IF/ID is zeroed at the end of this cycle (IF.Flush = 1)</title>}
+                  {flushing && <title>{`Flush: ${b.label} is zeroed at the end of this cycle, turning the wrong-path instruction into a bubble`}</title>}
                 </rect>
                 <KonvaLabel
                   spec={{ text: b.label, x: b.x - 30, y: b.top - 17, width: b.width + 60, height: 14, align: "center", bold: true, fontSize: 11 }}
@@ -907,8 +925,8 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       {/* Ellipse x/y is its CENTER — was cx=375 cy=140 before, wrong. */}
       {/* Pipeline mode: moved into EX, after ID/EX — see PIPELINE_BRANCH_LS in
       datapathWires.ts. Same ellipse, just translated from its original
-      center (325, 115). Hazards mode draws its own, in ID. */}
-      {!hazards && (
+      center (325, 115). Early-branch mode draws its own, in ID. */}
+      {!early && (
         <g transform={pipeline ? `translate(${PIPELINE_BRANCH_LS.cx - 325} ${PIPELINE_BRANCH_LS.cy - 115 + PIPELINE_TOP_DY})` : undefined}>
           <ellipse cx={325} cy={115} rx={50} ry={25} className="dp-box" fill="#f2f2f2" />
           <KonvaLabel spec={{ text: "Left Shift\n2-bit", x: 275, y: 90, width: 100, height: 50, align: "center", vAlign: "middle", bold: true }} />
@@ -936,8 +954,8 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       </g>
 
       {/* ---- Add2 (branch target) ---- */}
-      {/* Hazards mode draws its own, in ID. */}
-      {!hazards && (
+      {/* Early-branch mode draws its own, in ID. */}
+      {!early && (
         <g transform={pipeline ? `translate(${PIPELINE_OFFSET.EX} ${PIPELINE_TOP_DY})` : undefined}>
           <path d={aluPath(500, 65, 40, 60)} className="dp-box" fill="white" />
           <KonvaLabel spec={{ text: "Add", x: 505, y: 65, width: 40, height: 60, align: "center", vAlign: "middle", bold: true, fill: "#c0392b" }} />
@@ -1023,12 +1041,12 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       </g>
       </g>
 
-      {/* ---- Early-branch hardware (hazards mode) ---- */}
+      {/* ---- Early-branch hardware (early-branch mode) ---- */}
       {/* Final coordinates (datapathBranch.ts). IF: MUX 4 (PC+4 vs. branch
       target, selected by the comparator from above) and MUX 5 (vs. the jump
       target), feeding PC; the jump shifter below IF/ID. ID: the branch
       shifter and adder, FwdRD1/FwdRD2, and the isZero? comparator. */}
-      {hazards && (
+      {early && (
         <g>
           {muxBox(BR_MUX4, "MUX 4")}
           {jump && (
@@ -1084,7 +1102,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       )}
 
       {/* ---- MUX 4 (Branch) ---- */}
-      {!hazards && (
+      {!early && (
       <g transform={topMuxShift}>
         <rect x={780} y={25} width={30} height={90} rx={7.5} className="dp-box" fill="#f2f2f2" />
         <KonvaLabels
@@ -1108,7 +1126,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       via MUX5_PC — see datapathWires.ts for why input 2 and the output
       share the right side instead of following MUX 4's left-in/right-out
       convention (a real gap-from-WD_ concern, not just taste). */}
-      {jump && !hazards && (
+      {jump && !early && (
         <g transform={topMuxShift}>
           <rect x={840} y={25} width={30} height={90} rx={7.5} className="dp-box" fill="#f2f2f2" />
           <KonvaLabel spec={{ text: "MUX 5", x: 840, y: 25, width: 30, height: 90, align: "center", vAlign: "middle", bold: true }} />
@@ -1128,7 +1146,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       cy=590 matches JADDR_LS/LS_MUX5's current endpoints in
       datapathWires.ts (poly(...,110,590) / poly(190,590,...)) — cx/rx are
       unchanged (110/190 = 150∓40), only the vertical position moved. */}
-      {jump && !hazards && (
+      {jump && !early && (
         <g transform={pipeline ? `translate(${PIPELINE_OFFSET.ID} ${PIPELINE_BOTTOM_DY})` : undefined}>
           <ellipse cx={150} cy={590} rx={40} ry={18} className="dp-box" fill="#f2f2f2" />
           <KonvaLabel spec={{ text: "Left Shift\n2-bit", x: 110, y: 572, width: 80, height: 36, align: "center", vAlign: "middle", bold: true }} />
@@ -1140,7 +1158,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       raw 26-bit jump index straight out of the fetched instruction word,
       not anything decoded via the rd/shamt/funct field boxes it happens
       to run past. Positioned directly beneath that segment. */}
-      {jump && !hazards && (
+      {jump && !early && (
         <KonvaLabel
           spec={
             pipeline
@@ -1167,7 +1185,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       {/* ---- Control (pipeline mode) ---- */}
       {/* Last, so its hover overlay draws over the bars and every other
       component. */}
-      {pipeline && <ControlUnit hazards={hazards} />}
+      {pipeline && <ControlUnit hazards={early} />}
 
       {state?.error && (
         <text x={viewWidth / 2} y={pipeline ? PIPELINE_VIEW_Y + PIPELINE_VIEW_HEIGHT - 4 : 575} className="dp-error" textAnchor="middle">

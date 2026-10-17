@@ -83,6 +83,9 @@ function regName(num: number): string {
   return name ? `$${name}` : `$${num}`;
 }
 
+/** The pipeline register zeroed to flush an instruction in each stage. */
+const FLUSH_REGISTER: Partial<Record<CycleStage, string>> = { F: "IF/ID", D: "ID/EX", A: "EX/MEM" };
+
 const FWD_SOURCE = { [FWD_EX_MEM]: "EX/MEM (10)", [FWD_MEM_WB]: "MEM/WB (01)" } as Record<number, string>;
 
 /** Pipeline hazards mode: a one-line explanation of the hazard handling
@@ -94,6 +97,7 @@ function hazardNote(
   bubbles: CycleStage[],
   fwd: ForwardingSignals | null,
   brFwd: BranchForwardingSignals | null,
+  early: boolean,
 ): ForwardingRowsData["note"] {
   const at = (stage: CycleStage) => slots.find((s) => s.stage === stage);
   const ex = at("A");
@@ -101,13 +105,23 @@ function hazardNote(
   const mem = at("M");
   const info = (text: string) => ({ kind: "info" as const, text });
 
-  // A taken branch or jump resolving in ID, flushing the wrong-path fetch.
-  const flushed = slots.find((s) => s.flushed);
-  if (flushed && id) {
-    const what = isJumpOp(id.op) ? `${id.op} is a jump, decoded in ID` : `${id.op} is taken: the comparator in ID found its condition true`;
+  // A taken branch or jump resolving (in ID with early branches, else in
+  // MEM), flushing the wrong-path fetches behind it.
+  const flushed = slots.filter((s) => s.flushed).sort((a, b) => a.seq - b.seq);
+  const resolver = early ? id : mem;
+  if (flushed.length > 0 && resolver) {
+    const where = early ? "ID" : "MEM";
+    const what = isJumpOp(resolver.op)
+      ? `${resolver.op} is a jump, and jumps resolve in ${where}`
+      : early
+        ? `${resolver.op} is taken: the comparator in ID found its condition true`
+        : `${resolver.op} is taken: it resolves in MEM, from the ALU's isZero? latched in EX/MEM`;
+    const ops = flushed.map((s) => s.op).join(", ");
+    const these = flushed.length === 1 ? `${ops} was fetched` : `${ops} were fetched`;
+    const regs = flushed.map((s) => FLUSH_REGISTER[s.stage]).filter(Boolean).join(", ");
     return info(
-      `Misprediction: ${what}. ${flushed.op} was fetched because the pipeline predicts not taken, so it's flushed ` +
-        `(IF/ID is zeroed and a bubble enters ID) and MUX 4/5 send the target to PC instead.`,
+      `Misprediction: ${what}. ${these} because the pipeline predicts not taken, so ${flushed.length === 1 ? "it's" : "they're"} ` +
+        `flushed (${regs} ${flushed.length === 1 ? "is" : "are"} zeroed, leaving bubbles) and MUX 4/5 send the target to PC instead.`,
     );
   }
   // The stall cycle: IF and ID held.
@@ -116,10 +130,10 @@ function hazardNote(
     const head =
       `Stall: ${heldInId.op} is held in ID (and the next instruction in IF) because PC and IF/ID aren't written ` +
       `this cycle, and a bubble (nop) enters EX.`;
-    if (!isBranchOp(heldInId.op)) {
+    if (!early || !isBranchOp(heldInId.op)) {
       return info(`${head} ${mem?.op ?? "The load"} is in MEM, reading the data ${heldInId.op} needs.`);
     }
-    const again = stallReason(heldInId.state, ex?.state, mem?.state) === "branch-mem";
+    const again = stallReason(heldInId.state, ex?.state, mem?.state, early) === "branch-mem";
     return info(
       again
         ? `${head} ${mem?.op ?? "The load"} is now in MEM, but its data is only ready at the end of MEM, so the branch stalls once more.`
@@ -127,7 +141,7 @@ function hazardNote(
     );
   }
   // Detection: the hazard detection unit fires; next cycle stalls.
-  const reason = stallReason(id?.state, ex?.state, mem?.state);
+  const reason = stallReason(id?.state, ex?.state, mem?.state, early);
   if (id && reason) {
     if (reason === "load-use" && ex) {
       return info(
@@ -152,11 +166,19 @@ function hazardNote(
   }
   // The cycle after a flush.
   if (bubbles.includes("D") && !id) {
-    return info(`The flushed instruction is a bubble in ID; the branch target is in IF.`);
+    return info(
+      early
+        ? `The flushed instruction is a bubble in ID; the branch target is in IF.`
+        : `The flushed instructions are bubbles in ID, EX and MEM; the branch target is in IF.`,
+    );
   }
   // A branch resolving not taken: the prediction was right.
-  if (id && isBranchOp(id.op) && !id.wires.includes("ADD2_MUX4")) {
-    return info(`${id.op} is not taken: the comparator in ID found its condition false, so the predicted instruction in IF carries on.`);
+  if (resolver && isBranchOp(resolver.op) && !resolver.wires.includes("ADD2_MUX4")) {
+    return info(
+      early
+        ? `${resolver.op} is not taken: the comparator in ID found its condition false, so the predicted instruction in IF carries on.`
+        : `${resolver.op} is not taken (resolved in MEM), so the instructions fetched after it carry on.`,
+    );
   }
   // The cycle after a load-use stall: the dependent instruction is in EX, the load in WB.
   if (fwd && bubbles.includes("M") && (fwd.fwdA === FWD_MEM_WB || fwd.fwdB === FWD_MEM_WB)) {
@@ -237,16 +259,22 @@ export function App() {
   // Off by default so the single-cycle diagram stays the out-of-the-box
   // view.
   const [showPipeline, setShowPipeline] = useState(false);
-  // Pipeline hazards: draws the forwarding hardware (MUX 6/7 in EX, and the
-  // early-branch datapath: branches resolved in ID, FwdRD1/FwdRD2, MUX 4/5
-  // in IF), adds the forwarding signals to the Control table, and turns on
-  // the hazard detection unit and predict-not-taken fetching: load-use and
-  // branch hazards stall, taken branches and jumps flush. Toggling it
+  // Pipeline hazards: draws the forwarding hardware (MUX 6/7 in EX), adds
+  // the forwarding signals to the Control table, and turns on the hazard
+  // detection unit and predict-not-taken fetching: load-use hazards stall,
+  // taken branches and jumps flush (see also early branches below). Toggling it
   // doesn't restart the run: it only affects the cycles that follow. Only
   // offered in pipeline mode; the choice is remembered while pipeline mode
   // is off.
   const [showHazards, setShowHazards] = useState(false);
   const hazards = showPipeline && showHazards;
+  // Early branches (within hazards mode): resolve branches and jumps in ID,
+  // with the comparator, its forwarding muxes and MUX 4/5 moved forward
+  // (one instruction flushed on a taken branch). Off, they resolve at MUX
+  // 4/5 after EX/MEM (three flushed). Like the hazards toggle, it doesn't
+  // restart the run.
+  const [showEarlyBranch, setShowEarlyBranch] = useState(false);
+  const earlyBranch = hazards && showEarlyBranch;
   const dispContainerRef = useRef<HTMLDivElement>(null);
   const consContainerRef = useRef<HTMLDivElement>(null);
   const dispEditor = useAceEditor(dispContainerRef, { mode: "ace/mode/mips", pcNum: true, write: false });
@@ -262,17 +290,17 @@ export function App() {
   const memBank = useMemoryBank(256);
   const ctrlBank = useCtrlBank();
   const valsBank = useValsBank();
-  const machine = useMachineHistory(program, regBank, memBank, showPipeline, hazards);
+  const machine = useMachineHistory(program, regBank, memBank, showPipeline, hazards, earlyBranch);
 
   // This cycle's Fwdop1/Fwdop2 (for the instruction in EX) and
   // FwdRD1/FwdRD2 (for a branch in ID), from the instructions in MEM and WB.
   const forwarding = useMemo(
-    () => (hazards ? computeForwarding(machine.pipelineSlots, true) : null),
-    [hazards, machine.pipelineSlots],
+    () => (hazards ? computeForwarding(machine.pipelineSlots, earlyBranch) : null),
+    [hazards, earlyBranch, machine.pipelineSlots],
   );
   const branchForwarding = useMemo(
-    () => (hazards ? computeBranchForwarding(machine.pipelineSlots) : null),
-    [hazards, machine.pipelineSlots],
+    () => (earlyBranch ? computeBranchForwarding(machine.pipelineSlots) : null),
+    [earlyBranch, machine.pipelineSlots],
   );
   const loadUseTitle = "Load-use hazard: needs a one-cycle stall";
   const forwardingRows: ForwardingRowsData | undefined = hazards
@@ -292,10 +320,14 @@ export function App() {
             warn: forwarding?.loadUseB,
             title: forwarding?.loadUseB ? loadUseTitle : undefined,
           },
-          { name: "FwdRD1", op: branchForwarding?.id.op ?? null, value: formatFwd(branchForwarding?.fwdRd1 ?? FWD_NONE) },
-          { name: "FwdRD2", op: branchForwarding?.id.op ?? null, value: formatFwd(branchForwarding?.fwdRd2 ?? FWD_NONE) },
+          ...(earlyBranch
+            ? [
+                { name: "FwdRD1", op: branchForwarding?.id.op ?? null, value: formatFwd(branchForwarding?.fwdRd1 ?? FWD_NONE) },
+                { name: "FwdRD2", op: branchForwarding?.id.op ?? null, value: formatFwd(branchForwarding?.fwdRd2 ?? FWD_NONE) },
+              ]
+            : []),
         ],
-        note: hazardNote(machine.pipelineSlots, machine.pipelineBubbles, forwarding, branchForwarding),
+        note: hazardNote(machine.pipelineSlots, machine.pipelineBubbles, forwarding, branchForwarding, earlyBranch),
       }
     : undefined;
 
@@ -560,12 +592,26 @@ export function App() {
                 Toggle Pipeline Hazards
               </button>
             )}
+            {hazards && (
+              <button
+                className={showEarlyBranch ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
+                onClick={() => setShowEarlyBranch((e) => !e)}
+                aria-pressed={showEarlyBranch}
+                title={
+                  showEarlyBranch
+                    ? "Resolve branches in MEM again: up to three wrong-path instructions flushed"
+                    : "Resolve branches in ID: comparator and forwarding in ID, one wrong-path instruction flushed"
+                }
+              >
+                Toggle Early Branch
+              </button>
+            )}
           </div>
           <div className="app-diagram">
             <DatapathDiagram
               activeWires={machine.current?.activeWires ?? []}
               state={machine.current}
-              features={{ shift: showShift, jump: showJump, pipeline: showPipeline, hazards }}
+              features={{ shift: showShift, jump: showJump, pipeline: showPipeline, hazards, earlyBranch }}
               pipelineSlots={machine.pipelineSlots}
               forwarding={forwarding}
               branchForwarding={branchForwarding}

@@ -42,23 +42,30 @@
  * Like the slides' condition, this is conservative: it also stalls when the
  * matching rt is the ID instruction's destination rather than a source.
  *
- * Early branches (also step(true)): branches compare their registers in ID,
- * so a branch in ID whose rs or rt is still being produced stalls —
+ * Early branches (step(true, true)): branches compare their registers in
+ * ID, so a branch in ID whose rs or rt is still being produced stalls —
  *   - one cycle for an instruction in EX that writes it (then its result is
  *     forwarded from EX/MEM), and
  *   - one more if that producer is a load, which only has its data at the
  *     end of MEM (a load in MEM stalls the branch too; then the data is
  *     forwarded from MEM/WB).
- * See stallReason().
+ * See stallReason(). Without early branches, a branch is just an ALU
+ * instruction for hazard purposes: its operands are forwarded in EX like
+ * anyone else's, and only the load-use rule can stall it.
  *
- * Branch prediction (also step(true)): predict not taken. The instruction
- * after a branch or jump is always fetched next. Branches and jumps resolve
- * in ID, so if one turns out taken, the instruction it let into IF is on the
- * wrong path: when the branch leaves ID it's flushed (IF/ID is zeroed, so a
- * bubble enters ID) and the target is fetched instead — one cycle lost.
+ * Branch prediction (step(true, ...)): predict not taken. The instructions
+ * after a branch or jump are always fetched next. If it turns out taken,
+ * every instruction fetched behind it is on the wrong path, and is flushed
+ * when the branch resolves (each becomes a bubble), then the target is
+ * fetched. Where it resolves decides the cost:
+ *   - early branches: in ID, by the comparator there, so one instruction
+ *     (in IF) is flushed;
+ *   - otherwise: in MEM, where MUX 4/5 sit after EX/MEM, so three are
+ *     (in IF, ID and EX).
  * The engine already knows each instruction's real next PC (precompute), so
- * the wrong-path instruction is fetched as a "doomed" slot: only its Fetch
- * stage, which reads and writes nothing, so it can't affect any state.
+ * wrong-path instructions are fetched as "doomed" slots: their IF, ID and
+ * EX stages are computed against the pending state, but never MEM or WB,
+ * so they read registers but can't change anything.
  *
  * Pure: no React, no banks — reads come in through BaseReaders.
  */
@@ -171,9 +178,14 @@ export function destReg(s: MachineState | undefined): number | null {
   return wr === 0 ? null : wr;
 }
 
-export function stallReason(id?: MachineState, ex?: MachineState, mem?: MachineState): StallReason | null {
+export function stallReason(
+  id?: MachineState,
+  ex?: MachineState,
+  mem?: MachineState,
+  earlyBranch = true,
+): StallReason | null {
   if (!id || id.error) return null;
-  if (isBranchOp(id.op)) {
+  if (earlyBranch && isBranchOp(id.op)) {
     const srcs = [int32.toNum(id.fields.rs), int32.toNum(id.fields.rt)];
     const exDest = destReg(ex);
     if (exDest !== null && srcs.includes(exDest)) return "branch-ex";
@@ -336,20 +348,51 @@ interface Slot extends Precomputed {
   seq: number;
   pc: number;
   stageIdx: number;
-  /** A wrong-path fetch behind a taken branch/jump: only ever in IF, and
-   * flushed when the branch leaves ID. */
+  /** A wrong-path fetch behind a taken branch/jump: flushed when the
+   * branch resolves, before it can reach MEM. */
   doomed?: boolean;
+  /** A taken branch or jump fetched with prediction on: when it reaches
+   * the stage it resolves in, the doomed slots behind it are flushed. */
+  redirect?: boolean;
 }
-
-/** Inputs for a doomed slot's Fetch stage, which never reads anything. */
-const NO_READS: MachineInputs = {
-  readReg: () => int32.num(0),
-  readWord: () => int32.num(0),
-  readByte: () => int32.num(0),
-};
 
 const ID_IDX = 1;
 const EX_IDX = 2;
+const MEM_IDX = 3;
+
+/** A wrong-path instruction's IF, ID and EX stages (all it can reach before
+ * a flush), against `pending` — reads only. Stops early if a stage errors. */
+function precomputeDoomed(program: ProgramLine[], pc: number, pending: PendingState): Precomputed {
+  const states: MachineState[] = [];
+  const reads: StageRead[][] = [];
+  const wires: WireId[] = [];
+  const pcBits = int32.num(pc * 4);
+  let vals: ValsSnapshot = {};
+  for (let i = 0; i <= EX_IDX; i++) {
+    const stageReads: StageRead[] = [];
+    reads.push(stageReads);
+    const inputs: MachineInputs = {
+      readReg: (name) => {
+        stageReads.push({ kind: "reg", name: bare(name) });
+        return pending.readReg(name);
+      },
+      readWord: () => int32.num(0),
+      readByte: () => int32.num(0),
+    };
+    const state = execStage(program, pc, STAGES[i], vals, pcBits, inputs);
+    if (state.error) break;
+    states.push(state);
+    wires.push(...state.activeWires);
+    vals = state.vals;
+  }
+  return { states, reads, wires, nextPc: null };
+}
+
+/** A slot's state for its current stage (a doomed slot whose later stage
+ * errored keeps showing its last good one). */
+function stateOf(s: Slot): MachineState {
+  return s.states[Math.min(s.stageIdx, s.states.length - 1)];
+}
 
 /** Which vals each stage produces — for merging one cycle's vals across
  * the instructions in flight: the vals table then shows what's on the
@@ -380,9 +423,12 @@ export class PipelineEngine {
   /** Stage index of each bubble in flight. */
   private bubbles: number[] = [];
   private nextPc: number | null = 0;
-  /** Set after fetching a taken branch/jump with prediction on: the
-   * (wrong) not-taken successor to fetch next, as a doomed slot. */
+  /** While a taken branch/jump is unresolved (prediction on): the next
+   * not-taken successor to fetch, as a doomed slot. */
   private predictPc: number | null = null;
+  /** True from fetching a taken branch/jump until it resolves: the real
+   * target (nextPc) mustn't be fetched before then. */
+  private awaitingRedirect = false;
   private seq = 0;
   private halted = false;
   private pcParked = false;
@@ -402,9 +448,30 @@ export class PipelineEngine {
     return this.slots.find((s) => s.stageIdx === stageIdx && !s.doomed)?.states[stageIdx];
   }
 
-  /** The hazard detection unit, on the current pipeline (see stallReason). */
-  private hazard(): StallReason | null {
-    return stallReason(this.stateAt(ID_IDX), this.stateAt(EX_IDX), this.stateAt(EX_IDX + 1));
+  /** The hazard detection unit, on the current pipeline (see stallReason).
+   * Wrong-path instructions never cause stalls: they're flushed first. */
+  private hazard(earlyBranch: boolean): StallReason | null {
+    return stallReason(this.stateAt(ID_IDX), this.stateAt(EX_IDX), this.stateAt(MEM_IDX), earlyBranch);
+  }
+
+  /** The taken branch/jump that resolves this cycle, if any: it has reached
+   * its resolving stage (ID with early branches, else MEM). `>=` so one
+   * already past it — if early branches were switched on mid-flight —
+   * still resolves. */
+  private resolving(earlyBranch: boolean): Slot | undefined {
+    const at = earlyBranch ? ID_IDX : MEM_IDX;
+    return this.slots.find((s) => s.redirect && s.stageIdx >= at);
+  }
+
+  /** Whether this cycle stalls and/or flushes. With early branches a branch
+   * waiting on its operands can't resolve, so a stall wins; otherwise the
+   * branch resolves in MEM and everything behind it is on the wrong path,
+   * so the flush wins (and no stall is needed for wrong-path work). */
+  private decide(hazardUnit: boolean, earlyBranch: boolean): { stall: boolean; resolving: Slot | undefined } {
+    const hazard = hazardUnit && this.hazard(earlyBranch) !== null;
+    const resolving = this.resolving(earlyBranch);
+    if (earlyBranch) return { stall: hazard, resolving: hazard ? undefined : resolving };
+    return { stall: !resolving && hazard, resolving };
   }
 
   /** False once every instruction has left the pipeline and there's
@@ -414,65 +481,62 @@ export class PipelineEngine {
   }
 
   /** Runs one clock cycle. `hazardUnit` turns on the hazard detection unit
-   * (stalls), early branches and predict-not-taken fetching (see the
-   * header); off, the pipeline is ideal, as if every hazard were resolved
-   * for free. */
-  step(hazardUnit = false): CycleResult | null {
+   * (stalls) and predict-not-taken fetching, with branches resolving in ID
+   * (`earlyBranch`) or MEM (see the header); off, the pipeline is ideal, as
+   * if every hazard were resolved for free. */
+  step(hazardUnit = false, earlyBranch = false): CycleResult | null {
     if (!this.canStep()) return null;
     const effects: CycleEffects = { regReads: [], memReads: [], memWrites: [], regWrites: [], pc: null };
-    const stall = hazardUnit && this.hazard() !== null;
+    const { stall, resolving } = this.decide(hazardUnit, earlyBranch);
 
-    // A taken branch or jump leaving ID flushes the wrong-path instruction
-    // behind it (whether or not prediction is still on: once fetched, a
-    // doomed slot has to go).
-    const doomed = this.slots.find((s) => s.doomed);
-    const flush = !stall && !!doomed;
-    if (flush) this.slots = this.slots.filter((s) => s !== doomed);
+    // A taken branch or jump resolving flushes every wrong-path instruction
+    // behind it; each leaves a bubble where it would have advanced to.
+    const flushedAt: number[] = [];
+    if (resolving) {
+      resolving.redirect = false;
+      this.awaitingRedirect = false;
+      this.predictPc = null;
+      for (const s of this.slots) if (s.doomed) flushedAt.push(s.stageIdx + 1);
+      this.slots = this.slots.filter((s) => !s.doomed);
+    }
 
     // Everything in flight advances one stage; whatever just finished
     // write-back leaves. On a stall, IF and ID hold (PCWrite = IF/IDWrite =
     // 0) and a bubble takes the place of the instruction that would have
-    // entered EX. On a flush, a bubble takes the flushed instruction's
-    // place in ID.
+    // entered EX.
     const advances = (stageIdx: number) => !stall || stageIdx >= EX_IDX;
     this.slots = this.slots
       .map((s) => (advances(s.stageIdx) ? { ...s, stageIdx: s.stageIdx + 1 } : s))
       .filter((s) => s.stageIdx < STAGES.length);
     this.bubbles = this.bubbles.map((b) => b + 1).filter((b) => b < STAGES.length);
     if (stall) this.bubbles.push(EX_IDX);
-    if (flush) this.bubbles.push(ID_IDX);
+    this.bubbles.push(...flushedAt);
 
     // The next instruction enters Fetch (not on a stall: IF is still busy).
     if (stall) {
       // PC holds.
-    } else if (this.predictPc !== null) {
+    } else if (this.awaitingRedirect) {
       // Predicted not taken: fetch the next instruction in sequence, which
-      // is the wrong one. Only its Fetch stage is computed.
+      // is the wrong one (or nothing, past the end of the program).
       const pc = this.predictPc;
-      this.predictPc = null;
-      if (canRun(this.program, pc)) {
-        const state = execStage(this.program, pc, "F", {}, int32.num(pc * 4), NO_READS);
-        this.slots.push({
-          seq: this.seq++,
-          pc,
-          stageIdx: 0,
-          states: [state],
-          reads: [[]],
-          wires: [...state.activeWires],
-          nextPc: null,
-          doomed: true,
-        });
+      if (pc !== null && canRun(this.program, pc)) {
+        this.slots.push({ seq: this.seq++, pc, stageIdx: 0, ...precomputeDoomed(this.program, pc, this.pending), doomed: true });
+        this.predictPc = pc + 1;
         effects.pc = int32.num(pc * 4);
+      } else {
+        this.predictPc = null;
       }
     } else if (this.canFetch()) {
       const pc = this.nextPc as number;
       const pre = precompute(this.program, pc, this.pending);
-      this.slots.push({ seq: this.seq++, pc, stageIdx: 0, ...pre });
+      const op = pre.states[0]?.op ?? "";
+      // A taken branch or jump: the not-taken prediction will be wrong.
+      const redirect = hazardUnit && pre.nextPc !== null && pre.nextPc !== pc + 1 && (isBranchOp(op) || isJumpOp(op));
+      this.slots.push({ seq: this.seq++, pc, stageIdx: 0, ...pre, redirect });
       this.nextPc = pre.nextPc;
       effects.pc = int32.num(pc * 4);
-      // A taken branch or jump: the not-taken prediction will be wrong.
-      const op = pre.states[0]?.op ?? "";
-      if (hazardUnit && pre.nextPc !== null && pre.nextPc !== pc + 1 && (isBranchOp(op) || isJumpOp(op))) {
+      if (redirect) {
+        this.awaitingRedirect = true;
         this.predictPc = pc + 1;
       }
     } else if (this.nextPc !== null && !this.pcParked) {
@@ -483,15 +547,17 @@ export class PipelineEngine {
     }
 
     // Each in-flight instruction performs its stage (a held one redoes
-    // it — real hardware re-decodes the instruction in IF/ID too).
+    // it — real hardware re-decodes the instruction in IF/ID too). Wrong-
+    // path instructions only ever read.
     let error: string | null = null;
     let errorSlot: Slot | null = null;
     for (const slot of this.slots) {
-      const state = slot.states[slot.stageIdx];
-      for (const read of slot.reads[slot.stageIdx]) {
+      const state = stateOf(slot);
+      for (const read of slot.reads[slot.stageIdx] ?? []) {
         if (read.kind === "reg") effects.regReads.push(read.name);
         else effects.memReads.push({ addr: read.addr, byte: read.kind === "byte" });
       }
+      if (slot.doomed) continue;
       if (state.memWrite) {
         effects.memWrites.push(state.memWrite);
         this.pending.commitMem(state.memWrite.addr);
@@ -507,22 +573,22 @@ export class PipelineEngine {
     }
     if (error) this.halted = true;
 
-    // A doomed slot is flushed at the end of this cycle unless the branch
-    // in front of it stalls again.
-    const flushNext = !(hazardUnit && this.hazard() !== null);
+    // Doomed slots are flushed at the end of this cycle if their branch
+    // resolves then.
+    const flushNext = !!this.decide(hazardUnit, earlyBranch).resolving;
     const views: PipelineSlotView[] = this.slots.map((s) => ({
       seq: s.seq,
       pc: s.pc,
-      op: s.states[s.stageIdx].op,
+      op: stateOf(s).op,
       stage: STAGES[s.stageIdx],
-      state: s.states[s.stageIdx],
+      state: stateOf(s),
       wires: s.wires,
       stalled: stall && s.stageIdx < EX_IDX,
       flushed: !!s.doomed && flushNext,
     }));
     const oldest = this.slots.reduce((a, b) => (b.stageIdx > a.stageIdx ? b : a));
     const focus = errorSlot ?? oldest;
-    const summary: MachineState = { ...focus.states[focus.stageIdx], vals: mergedVals(views), error };
+    const summary: MachineState = { ...stateOf(focus), vals: mergedVals(views), error };
     return { slots: views, bubbles: this.bubbles.map((b) => STAGES[b]), effects, summary, error };
   }
 }
