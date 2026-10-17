@@ -17,6 +17,13 @@
  * Register/memory values are the real source of truth (useRegisterBank/
  * useMemoryBank, committed to by useMachineHistory). Vals/control table
  * marks are re-derived from each new MachineState — see the effect below.
+ *
+ * Values tray filtering: by default the register, memory and control tables
+ * only list what the assembled program refers to (see programRefs.ts): its
+ * registers, its memory (plus any word read or written while running) and
+ * a Control column per instruction kind it uses. "Display all registers,
+ * memory & control signals" turns that off. Each of the four tables can also be shown or
+ * hidden on its own from the tray's toolbar.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AceEditorPanel } from "./AceEditorPanel";
@@ -48,6 +55,7 @@ import {
 } from "../lib/mips-machine/forwarding";
 import { destReg, isBranchOp, isJumpOp, stallReason, type PipelineSlotView } from "../lib/mips-machine/pipeline";
 import { REGISTERS } from "../lib/mips-machine/registers";
+import { collectProgramRefs, type ProgramRefs } from "../lib/mips-machine/programRefs";
 import type { ProgramLine } from "../lib/mips-machine/interpreter";
 import type { CycleStage } from "../lib/mips-machine/machineState";
 import type { DataDecl, NumNode } from "../lib/mips-parser/ast";
@@ -77,6 +85,16 @@ const STAGE_LABELS: Record<CycleStage, string> = {
   M: "Memory",
   R: "Register Write",
 };
+
+/** The four tables in the values tray, in display order, each of which can
+ * be shown or hidden from the tray's toolbar. */
+type TrayTable = "registers" | "datapath" | "control" | "memory";
+const TRAY_TABLES: { key: TrayTable; label: string; title: string }[] = [
+  { key: "registers", label: "Registers", title: "Register file values ($pc, $zero, $v0…)" },
+  { key: "datapath", label: "Datapath", title: "Values on the datapath's wires and pipeline registers" },
+  { key: "control", label: "Control", title: "Control signals for each instruction kind" },
+  { key: "memory", label: "Memory", title: "Data memory contents" },
+];
 
 function regName(num: number): string {
   const name = REGISTERS.find((r) => r.num === num)?.name;
@@ -202,7 +220,7 @@ function hazardNote(
  * Byte/string entries pad to 4-byte boundaries exactly like
  * mips-util.ts's layoutData() does, so addresses stay consistent between
  * the two (see layoutData's own doc comment on why that matters for "la"
- * later). */
+ * later). programRefs.ts's dataSegmentBytes() mirrors this layout too. */
 function initializeMemory(data: DataDecl[] | null, memBank: MemoryBank): void {
   if (data === null) return;
   let addr = 0;
@@ -275,6 +293,26 @@ export function App() {
   // restart the run.
   const [showEarlyBranch, setShowEarlyBranch] = useState(false);
   const earlyBranch = hazards && showEarlyBranch;
+
+  // ---- Values tray: which tables are shown, and how much of each ------
+  const [visibleTables, setVisibleTables] = useState<Record<TrayTable, boolean>>({
+    registers: true,
+    datapath: true,
+    control: true,
+    memory: true,
+  });
+  // Off: the register and memory tables only list what the assembled
+  // program refers to. On: every register and memory word.
+  const [showAllValues, setShowAllValues] = useState(false);
+  // What the last successfully assembled program refers to (see
+  // programRefs.ts). null until the first Assemble, when there's no
+  // program to filter by yet, so everything is shown.
+  const [programRefs, setProgramRefs] = useState<ProgramRefs | null>(null);
+  // Memory words read or written since the last Assemble — addresses a
+  // program computes at run time can't be known from its source, so they
+  // join the memory table the first time they're touched, and stay.
+  const [touchedMemory, setTouchedMemory] = useState<Set<number>>(() => new Set());
+
   const dispContainerRef = useRef<HTMLDivElement>(null);
   const consContainerRef = useRef<HTMLDivElement>(null);
   const dispEditor = useAceEditor(dispContainerRef, { mode: "ace/mode/mips", pcNum: true, write: false });
@@ -291,6 +329,38 @@ export function App() {
   const ctrlBank = useCtrlBank();
   const valsBank = useValsBank();
   const machine = useMachineHistory(program, regBank, memBank, showPipeline, hazards, earlyBranch);
+
+  // Any memory cell marked this render (read = success, written = warning,
+  // bad edit = danger) has been touched: remember it.
+  useEffect(() => {
+    setTouchedMemory((prev) => {
+      const added = memBank.cells.flatMap((cell, i) => (cell.mark !== "default" && !prev.has(i) ? [i] : []));
+      return added.length === 0 ? prev : new Set([...prev, ...added]);
+    });
+  }, [memBank.cells]);
+
+  const shownRegs = useMemo(
+    () => (showAllValues || programRefs === null ? null : programRefs.registers),
+    [showAllValues, programRefs],
+  );
+  const shownWords = useMemo(
+    () => (showAllValues || programRefs === null ? null : new Set([...programRefs.memoryWords, ...touchedMemory])),
+    [showAllValues, programRefs, touchedMemory],
+  );
+  const shownKinds = useMemo(
+    () => (showAllValues || programRefs === null ? null : programRefs.ops),
+    [showAllValues, programRefs],
+  );
+  // For the "Hiding …" line under the toggles.
+  const hiddenRegCount = shownRegs === null ? 0 : REGISTERS.filter((r) => r.num !== null && !shownRegs.has(r.num)).length;
+  const hiddenWordCount = shownWords === null ? 0 : memBank.cells.filter((_, i) => !shownWords.has(i)).length;
+  const plural = (n: number, word: string) => `${n} unused ${word}${n === 1 ? "" : "s"}`;
+  const hiddenParts = [
+    hiddenRegCount > 0 ? plural(hiddenRegCount, "register") : null,
+    hiddenWordCount > 0 ? plural(hiddenWordCount, "memory word") : null,
+  ].filter((p): p is string => p !== null);
+  // e.g. "22 unused registers and 64 unused memory words"
+  const hiddenSummary = hiddenParts.join(" and ");
 
   // This cycle's Fwdop1/Fwdop2 (for the instruction in EX) and
   // FwdRD1/FwdRD2 (for a branch in ID), from the instructions in MEM and WB.
@@ -363,6 +433,9 @@ export function App() {
       // 1-indexed (PEG.js convention), Ace rows are 0-indexed.
       const sourceLines: number[] = assembled.map((line) => line.prop.loc - 1);
 
+      // Clear the previous run's memory marks first, so they don't count
+      // as "touched" by this new program.
+      memBank.RES();
       initializeMemory(data, memBank);
       dispEditor.load(mipsUtil.print(assembled));
       codeEditor.reset();
@@ -370,6 +443,8 @@ export function App() {
       machine.reset();
       setProgram(programLines);
       setProgramSourceLines(sourceLines);
+      setProgramRefs(collectProgramRefs(assembled.map((line) => line.prop.inst), data));
+      setTouchedMemory(new Set());
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       consEditor.log(message);
@@ -463,6 +538,8 @@ export function App() {
     codeEditor.load(DEFAULT_SOURCE);
   }, [codeEditor]);
 
+  const noTablesShown = TRAY_TABLES.every(({ key }) => !visibleTables[key]);
+
   return (
     <div className="app">
       <header className="app-toolbar">
@@ -542,14 +619,15 @@ export function App() {
         </section>
 
         <section className="app-diagram-wrap">
-          <div className="app-diagram-toolbar">
+          <div className="app-diagram-toolbar" role="group" aria-label="Diagram toggles">
+            <span className="app-diagram-toolbar-label">Toggles:</span>
             <button
               className={showShift ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
               onClick={() => setShowShift((s) => !s)}
               aria-pressed={showShift}
               title={showShift ? "Hide shift (sll/srl) artwork" : "Show shift (sll/srl) artwork"}
             >
-              Toggle Shift
+              Shift
             </button>
             <button
               className={showJump ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
@@ -557,7 +635,7 @@ export function App() {
               aria-pressed={showJump}
               title={showJump ? "Hide jump (j) artwork" : "Show jump (j) artwork"}
             >
-              Toggle Jump
+              Jump
             </button>
             <button
               className={showPipeline ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
@@ -576,7 +654,7 @@ export function App() {
                   : "Switch to pipelined execution (restarts the run)"
               }
             >
-              Toggle Pipeline
+              Pipeline
             </button>
             {showPipeline && (
               <button
@@ -589,7 +667,7 @@ export function App() {
                     : "Show hazard handling: forwarding, stalls, early branches and predict-not-taken"
                 }
               >
-                Toggle Pipeline Hazards
+                Pipeline Hazards
               </button>
             )}
             {hazards && (
@@ -603,7 +681,7 @@ export function App() {
                     : "Resolve branches in ID: comparator and forwarding in ID, one wrong-path instruction flushed"
                 }
               >
-                Toggle Early Branch
+                Early Branch
               </button>
             )}
           </div>
@@ -634,10 +712,43 @@ export function App() {
           </button>
           {!tablesCollapsed && (
             <section className="app-tables">
-              <RegisterTable bank={regBank} />
-              <ValsTable bank={valsBank} />
-              <ControlTable bank={ctrlBank} forwarding={forwardingRows} />
-              <MemoryTable bank={memBank} />
+              <div className="app-tables-toolbar">
+                <div className="app-tables-toolbar-row" role="group" aria-label="Tables to show">
+                  <span className="app-tables-toolbar-label">Show</span>
+                  {TRAY_TABLES.map(({ key, label, title }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className={visibleTables[key] ? "app-tables-chip app-tables-chip-on" : "app-tables-chip"}
+                      onClick={() => setVisibleTables((v) => ({ ...v, [key]: !v[key] }))}
+                      aria-pressed={visibleTables[key]}
+                      title={`${visibleTables[key] ? "Hide" : "Show"}: ${title}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <label className="app-tables-showall">
+                  <input
+                    type="checkbox"
+                    checked={showAllValues}
+                    onChange={(e) => setShowAllValues(e.target.checked)}
+                  />
+                  Display all registers, memory &amp; control signals
+                </label>
+                {!showAllValues && programRefs === null && (
+                  <div className="app-tables-filter-note">Once you assemble a program, only relevant registers and memory will remain!</div>
+                )}
+                {!showAllValues && programRefs !== null && hiddenSummary && (
+                  <div className="app-tables-filter-note">Hiding {hiddenSummary}.</div>
+                )}
+              </div>
+
+              {visibleTables.registers && <RegisterTable bank={regBank} shownRegs={shownRegs} />}
+              {visibleTables.datapath && <ValsTable bank={valsBank} />}
+              {visibleTables.control && <ControlTable bank={ctrlBank} forwarding={forwardingRows} shownKinds={shownKinds} />}
+              {visibleTables.memory && <MemoryTable bank={memBank} shownWords={shownWords} />}
+              {noTablesShown && <div className="app-tables-filter-note">All tables are hidden. Pick one above to show it.</div>}
             </section>
           )}
         </div>

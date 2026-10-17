@@ -1,5 +1,5 @@
 import type { Int32Bits } from "../lib/Numbers/int32";
-import { KIND, CONTROLS } from "../lib/mips-machine/ctrl";
+import { KIND, CONTROLS, type Kind } from "../lib/mips-machine/ctrl";
 import { formatControlBits, type CtrlBank, type MarkStatus } from "../hooks/useControlBank";
 import "./ControlTable.css";
 
@@ -33,6 +33,17 @@ interface ControlTableProps {
   bank: CtrlBank;
   /** Pipeline hazards mode only. Omit (undefined) to hide the extra rows. */
   forwarding?: ForwardingRowsData;
+  /** Instruction kinds (columns) to show, or null to show every kind. See
+   * App.tsx's "Display all" toggle. */
+  shownKinds?: Set<string> | null;
+}
+
+/** A visible column: its instruction kind, and its index into KIND (which
+ * is also its index into each row's cells, so filtering columns never
+ * misaligns a cell with its header). */
+interface Column {
+  kind: Kind;
+  index: number;
 }
 
 // Matrix layout — one header column per instruction kind, one row per
@@ -41,31 +52,35 @@ interface ControlTableProps {
 // directly: thead built from KIND, one <tr> per CONTROLS entry.
 //
 // Read-only
-export function ControlTable({ bank, forwarding }: ControlTableProps) {
+export function ControlTable({ bank, forwarding, shownKinds = null }: ControlTableProps) {
+  const columns: Column[] = KIND.map((kind, index) => ({ kind, index })).filter(
+    ({ kind }) => shownKinds === null || shownKinds.has(kind),
+  );
+
   return (
     <table className="control-table">
       <thead>
         <tr>
           <th className="ctrl-corner">Control</th>
-          {KIND.map((k) => (
-            <th key={k} className={`ctrl-head mark-${bank.headerMarks[k]}`}>
-              {k}
+          {columns.map(({ kind }) => (
+            <th key={kind} className={`ctrl-head mark-${bank.headerMarks[kind]}`}>
+              {kind}
             </th>
           ))}
         </tr>
       </thead>
       <tbody>
         {CONTROLS.map((def) => (
-          <ControlRow key={def.name} name={def.name} len={def.len} cells={bank.cells[def.name]} />
+          <ControlRow key={def.name} name={def.name} len={def.len} cells={bank.cells[def.name]} columns={columns} />
         ))}
         {forwarding && (
           <>
             {forwarding.rows.map((row) => (
-              <ForwardingRowView key={row.name} row={row} />
+              <ForwardingRowView key={row.name} row={row} columns={columns} />
             ))}
             {forwarding.note && (
               <tr className="ctrl-fwd-row">
-                <td className={`ctrl-name ctrl-fwd-note ctrl-fwd-note-${forwarding.note.kind}`} colSpan={KIND.length + 1}>
+                <td className={`ctrl-name ctrl-fwd-note ctrl-fwd-note-${forwarding.note.kind}`} colSpan={columns.length + 1}>
                   {forwarding.note.text}
                 </td>
               </tr>
@@ -81,15 +96,16 @@ interface ControlRowProps {
   name: string;
   len: number;
   cells: { bits: Int32Bits; mark: MarkStatus }[];
+  columns: Column[];
 }
 
-function ControlRow({ name, len, cells }: ControlRowProps) {
+function ControlRow({ name, len, cells, columns }: ControlRowProps) {
   const rowMark = cells.some((c) => c.mark === "success") ? "success" : "default";
   return (
     <tr>
       <td className={`ctrl-name mark-${rowMark}`}>{name}</td>
-      {KIND.map((k, i) => (
-        <ControlCell key={k} len={len} state={cells[i]} />
+      {columns.map(({ kind, index }) => (
+        <ControlCell key={kind} len={len} state={cells[index]} />
       ))}
     </tr>
   );
@@ -108,16 +124,16 @@ function ControlCell({ len, state }: ControlCellProps) {
   );
 }
 
-function ForwardingRowView({ row }: { row: ForwardingRow }) {
+function ForwardingRowView({ row, columns }: { row: ForwardingRow; columns: Column[] }) {
   const { name, op, value, warn, title } = row;
   const active = op !== null && (KIND as readonly string[]).includes(op);
   const mark = warn ? "warning" : "success";
   return (
     <tr className="ctrl-fwd-row">
       <td className={`ctrl-name mark-${active ? mark : "default"}`}>{name}</td>
-      {KIND.map((k) => (
-        <td key={k} className={`ctrl-cell mark-${k === op ? mark : "default"}`} title={k === op ? title : undefined}>
-          <input type="text" value={k === op ? value : "--"} readOnly />
+      {columns.map(({ kind }) => (
+        <td key={kind} className={`ctrl-cell mark-${kind === op ? mark : "default"}`} title={kind === op ? title : undefined}>
+          <input type="text" value={kind === op ? value : "--"} readOnly />
         </td>
       ))}
     </tr>

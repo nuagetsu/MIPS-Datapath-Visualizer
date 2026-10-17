@@ -6,9 +6,13 @@ import "./RegisterTable.css";
  
 interface RegisterTableProps {
   bank: RegisterBank;
+  /** Register numbers to show, or null to show every register. $pc is
+   * always shown. See App.tsx's "Display all register/memory values". */
+  shownRegs?: Set<number> | null;
 }
  
-export function RegisterTable({ bank }: RegisterTableProps) {
+export function RegisterTable({ bank, shownRegs = null }: RegisterTableProps) {
+  const rows = REGISTERS.filter((def) => shownRegs === null || def.num === null || shownRegs.has(def.num));
   return (
     <table className="register-table">
       <thead>
@@ -18,7 +22,7 @@ export function RegisterTable({ bank }: RegisterTableProps) {
         </tr>
       </thead>
       <tbody>
-        {REGISTERS.map((def) => (
+        {rows.map((def) => (
           <RegisterRow
             key={def.name}
             def={def}

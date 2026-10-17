@@ -5,15 +5,23 @@ import "./MemoryTable.css";
 
 interface MemoryTableProps {
   bank: MemoryBank;
+  /** Word indices to show, or null to show every word. See App.tsx's
+   * "Display all register/memory values". */
+  shownWords?: Set<number> | null;
 }
 
-export function MemoryTable({ bank }: MemoryTableProps) {
+export function MemoryTable({ bank, shownWords = null }: MemoryTableProps) {
   // FIX: the original truncated every address to its last 2 hex digits
   // unconditionally, which only stays unique for memory sizes <= 256 bytes
   // (the only size ever actually configured). This sizes the label width
   // to the bank's real size instead, so larger configurations don't
   // silently collide (e.g. 0xFC and 0x1FC both rendering as "0xFC").
   const addrDigits = Math.max(2, Math.max(bank.size - 4, 0).toString(16).length);
+
+  // Keep each cell's real word index: filtering must not renumber rows.
+  const rows = bank.cells
+    .map((cell, wordIndex) => ({ cell, wordIndex }))
+    .filter(({ wordIndex }) => shownWords === null || shownWords.has(wordIndex));
 
   return (
     <table className="memory-table">
@@ -24,7 +32,7 @@ export function MemoryTable({ bank }: MemoryTableProps) {
         </tr>
       </thead>
       <tbody>
-        {bank.cells.map((cell, wordIndex) => (
+        {rows.map(({ cell, wordIndex }) => (
           <MemoryRow
             key={wordIndex}
             wordIndex={wordIndex}
@@ -35,6 +43,13 @@ export function MemoryTable({ bank }: MemoryTableProps) {
             trySave={bank.trySave}
           />
         ))}
+        {rows.length === 0 && (
+          <tr>
+            <td colSpan={2} className="table-empty-note">
+              No memory addresses referenced yet. Addresses appear here as the program reads or writes them.
+            </td>
+          </tr>
+        )}
       </tbody>
     </table>
   );

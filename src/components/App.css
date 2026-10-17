@@ -2,8 +2,8 @@
  * ordinary CSS Grid/Flexbox for the page chrome, and the datapath diagram
  * (an <svg viewBox>, see DatapathDiagram.css) drops into it inside
  * .app-diagram-wrap — a single grid item (that wrapper, not the diagram
- * directly, since it also holds the shift/jump toggle toolbar above it)
- * that scales itself. Nothing here computes pixel positions in JS. */
+ * directly, since it also holds the "Toggles:" bar above it) that scales
+ * itself. Nothing here computes pixel positions in JS. */
 
 .app {
   display: flex;
@@ -140,6 +140,12 @@
    * diagram's rightmost wires (MUX 4/5, the jump wraparound) instead of
    * overlapping them. Left-only, since the tab only protrudes leftward. */
   margin-left: 10px;
+  /* Pull the tray up through .app-main's 12px top padding so it meets the
+   * header's bottom border, like the "Toggles:" bar (see .app-diagram-wrap).
+   * The header's border is its top edge, so it has none of its own. */
+  margin-top: -12px;
+  border-top: none;
+  border-radius: 0 0 4px 4px;
 }
 
 /* A folder-tab silhouette poking out from the tray's left edge: full
@@ -206,34 +212,142 @@
   }
 }
 
-/* Wraps the shift/jump toggle toolbar and the diagram itself as one grid
- * item — .app-diagram used to sit directly in .app-main's grid; now this
- * wrapper does, so the toolbar and the diagram can be stacked as two rows
- * inside the same column without disturbing the three-column grid, which
- * only relies on DOM order (editors | this wrapper | tables), not on any
- * selector naming .app-diagram specifically. */
+/* ---- Values tray toolbar: show/hide each of the four tables, and the
+ * "Display all registers, memory & control signals" switch. Sticks to the
+ * top of the tray's scroll area so it stays reachable below a long memory
+ * table. */
+.app-tables-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: #f4f3ec;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.app-tables-toolbar-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.app-tables-toolbar-label {
+  font-weight: 600;
+  margin-right: 2px;
+}
+
+.app-tables-chip {
+  font-size: 12px;
+  padding: 3px 10px;
+  border: 1px solid #ccc;
+  border-radius: 999px;
+  background: white;
+  color: #333;
+  cursor: pointer;
+}
+
+.app-tables-chip:hover {
+  background: #e8e6da;
+}
+
+/* Same "control signal is live" blue as the diagram toggles. */
+.app-tables-chip-on {
+  background: #2c5aa0;
+  border-color: #2c5aa0;
+  color: white;
+}
+
+.app-tables-chip-on:hover {
+  background: #244b87;
+}
+
+.app-tables-showall {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* .table-empty-note is used inside MemoryTable when filtering leaves no
+ * rows to show. */
+.app-tables-filter-note,
+.table-empty-note {
+  font-size: 11px;
+  color: #666;
+  font-style: italic;
+}
+
+.table-empty-note {
+  padding: 8px;
+  text-align: center;
+  white-space: normal;
+}
+
+/* Wraps the "Toggles:" bar and the diagram itself as one grid item —
+ * .app-diagram used to sit directly in .app-main's grid; now this wrapper
+ * does, so the bar and the diagram can be stacked as two rows inside the
+ * same column without disturbing the three-column grid, which only relies
+ * on DOM order (editors | this wrapper | tables), not on any selector
+ * naming .app-diagram specifically. */
 .app-diagram-wrap {
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  /* Pull this column up through .app-main's 12px top padding, so the
+   * "Toggles:" bar sits flush against the header's bottom border. Done on
+   * the wrapper rather than the bar, since the wrapper's overflow: hidden
+   * would clip a bar shifted up past its own edge. */
+  margin-top: -12px;
 }
 
+/* The "Toggles:" bar: a beige nav-bar-style strip holding the Shift/Jump/
+ * Pipeline/Pipeline Hazards/Early Branch toggles. It wraps, so buttons
+ * that don't fit move to a second row instead of being squeezed until
+ * their labels wrap and the buttons grow taller. */
 .app-diagram-toolbar {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
-  padding: 4px 8px;
+  padding: 6px 10px;
+  margin: 0 0 4px;
+  background: #f4f3ec;
+  border: 1px solid #ddd;
+  /* No top border: the header's own bottom border is the bar's top edge. */
+  border-top: none;
+  border-radius: 0 0 4px 4px;
   flex-shrink: 0;
+}
+
+.app-diagram-toolbar-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+  margin-right: 2px;
+  white-space: nowrap;
 }
 
 .app-diagram-toggle {
   font-size: 12px;
+  line-height: 1.4;
   padding: 4px 10px;
   border: 1px solid #ccc;
   border-radius: 4px;
-  background: #f4f3ec;
+  /* White when off, so it stands out against the beige bar. */
+  background: white;
+  color: #333;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .app-diagram-toggle:hover {
@@ -330,6 +444,11 @@
   .app-tables-tray {
     flex-direction: column;
     overflow: visible;
+    /* Stacked at the bottom here, not under the header: normal spacing and
+     * a full border again. */
+    margin-top: 0;
+    border-top: 1px solid #ddd;
+    border-radius: 4px;
   }
   .app-tables-handle {
     top: 0;
@@ -351,10 +470,17 @@
    * intrinsic default rather than filling the available width. Giving it
    * an explicit height here fixes that; the page already scrolls in this
    * stacked layout, so a generous fixed share of the viewport is fine.
-   * (Was .app-diagram directly before the shift/jump toolbar wrapper was
-   * added — .app-diagram itself is `flex:1` now, so it still fills
-   * whatever this wrapper's height leaves after the toolbar row.) */
+   * (Was .app-diagram directly before the toolbar wrapper was added —
+   * .app-diagram itself is `flex:1` now, so it still fills whatever this
+   * wrapper's height leaves after the toolbar row.) */
   .app-diagram-wrap {
     height: 60vh;
+    /* Stacked below the editors here, not under the header, so it keeps
+     * its normal spacing and a full border. */
+    margin-top: 0;
+  }
+  .app-diagram-toolbar {
+    border-top: 1px solid #ddd;
+    border-radius: 4px;
   }
 }
