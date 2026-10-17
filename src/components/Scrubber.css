@@ -1,0 +1,137 @@
+/* Timeline scrubber (Scrubber.tsx): spans the full width of the header, on
+ * its own row below the title and Step/Play controls — kept to a single
+ * short row (about 18px) so the datapath diagram keeps its room. */
+
+/* The header's flex gap (24px) applies between rows too; tighten the gap
+ * above the scrubber's row only. */
+.app-toolbar:has(> .scrubber) {
+  row-gap: 4px;
+}
+
+.scrubber {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.scrubber-buttons {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.scrubber-buttons button {
+  min-width: 22px;
+  height: 18px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+/* Readout and bar side by side, rather than stacked. */
+.scrubber-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scrubber-readout {
+  flex: 0 1 auto;
+  max-width: 45%;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: #444;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The bar. Segments are flex items whose flex-grow is their frame count,
+ * with no borders or padding, so every frame gets exactly 1/count of the
+ * width — which is what Scrubber's pointer maths and the cursor's
+ * left/width percentages assume. */
+.scrubber-track {
+  position: relative;
+  flex: 1;
+  min-width: 120px;
+  display: flex;
+  height: 14px;
+  background: #ece9dc;
+  border: 1px solid #bbb;
+  border-radius: 3px;
+  overflow: hidden;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+
+.scrubber-track:focus-visible {
+  outline: 2px solid #2c5aa0;
+  outline-offset: 2px;
+}
+
+.scrubber-track-empty {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.scrubber-seg {
+  flex-basis: 0;
+  flex-shrink: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  /* A divider between segments that doesn't take up layout width. */
+  box-shadow: inset -1px 0 0 rgba(0, 0, 0, 0.28);
+}
+
+.scrubber-seg-label {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 9px;
+  line-height: 1;
+  color: #333;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.scrubber-seg-error {
+  background-color: #f6d4d0 !important;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(192, 57, 43, 0.25) 0 3px,
+    transparent 3px 6px
+  ) !important;
+  background-size: auto !important;
+}
+
+/* Frames after the one on screen are washed out, so the part of the run
+ * already "played" stands out. */
+.scrubber-unplayed {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  background: rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+}
+
+/* The frame on screen. */
+.scrubber-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 4px;
+  box-sizing: border-box;
+  background: rgba(44, 90, 160, 0.3);
+  border-left: 2px solid #2c5aa0;
+  border-right: 2px solid #2c5aa0;
+  pointer-events: none;
+  transition: left 0.08s ease-out;
+}

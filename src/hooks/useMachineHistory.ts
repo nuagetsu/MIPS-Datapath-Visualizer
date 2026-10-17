@@ -5,70 +5,138 @@
  * the values of each reg in the datapath and which components/wires are
  * active", built on top of the pure step function.
  *
- * Deliberately thin: this hook's only job is (1) call execStage with the
- * current pc/stage/vals plus read access into the banks, (2) commit any
- * reported regWrite/memWrite/pcNext back into the banks, (3) push the
- * resulting state onto history. All the actual instruction semantics live
- * in interpreter.ts, where they're pure and independently testable.
+ * Timeline (scrubbing): the run is a list of frames. Frame 0 is the machine
+ * before the first step; frame i is the machine after step i. Each frame
+ * stores, besides its MachineState, a complete snapshot of the machine —
+ * register and memory values *and* marks, this hook's own pc/stage/vals,
+ * and (pipeline mode) the PipelineEngine — so any frame can be shown again
+ * exactly, and execution can carry on from it.
+ *
+ *   - Building: after a new program (or a mode switch), the whole run is
+ *     computed straight away, up to MAX_PRECOMPUTED_STEPS steps, so the
+ *     scrubber spans all of it. A longer (or endless) run is extended one
+ *     step at a time by step() once you reach the end.
+ *   - Seeking: seek(n) restores frame n's snapshot into the banks and this
+ *     hook. So the live machine is always the frame on screen.
+ *   - Branching: anything that changes what the future would be — toggling
+ *     Pipeline Hazards / Early Branch, or editing a register or memory word
+ *     (rebase()) — drops the frames after the one on screen and computes
+ *     them again from it. As before, the hazard toggles only affect the
+ *     cycles that follow.
+ *
+ * Deliberately thin otherwise: each step's job is still (1) call execStage
+ * (or the pipeline engine) with read access into the banks, (2) commit any
+ * reported regWrite/memWrite/pcNext back into the banks. All the actual
+ * instruction semantics live in interpreter.ts / pipeline.ts, where they're
+ * pure and independently testable.
  *
  * Using bank.RR/bank.WR/bank.lw/bank.sw/bank.lb/bank.sb directly as
  * MachineInputs (and as the commit calls) is deliberate, not incidental:
  * those functions already do the "success"/"warning" mark bookkeeping the
  * RegisterTable/MemoryTable components render, so register/memory reads
- * and writes stay visually highlighted for free — this hook doesn't need
- * to duplicate that.
+ * and writes stay visually highlighted for free — and the banks'
+ * snapshot() captures those marks along with the values.
  *
- * Pipeline mode (`pipeline` = true): step() runs one clock cycle of a
+ * Pipeline mode (`pipeline` = true): a step is one clock cycle of a
  * five-stage pipeline instead of one micro-step of one instruction — see
- * pipeline.ts, which does the work; this hook just applies each cycle's
- * reported effects to the banks, the same way it commits execStage()'s.
- * Switching modes mid-run isn't meaningful (a half-executed instruction
- * has no pipelined equivalent), so callers should reset() when toggling.
+ * pipeline.ts. `hazardUnit` turns on the hazard detection unit and
+ * predict-not-taken fetching; `earlyBranch` (with it) resolves branches in
+ * ID. Switching modes rebuilds the timeline; callers should seek(0) first
+ * (to put the starting values back) and reset().
  *
- * `hazardUnit` (pipeline mode only): the hazard detection unit, early
- * branches and predict-not-taken fetching — load-use and branch hazards
- * stall, taken branches and jumps flush (see pipeline.ts). It's read on
- * every step, so it can be toggled mid-run: it only affects the cycles that
- * follow. `earlyBranch` (with `hazardUnit`) resolves branches and jumps in
- * ID rather than MEM — one instruction flushed on a taken branch instead of
- * three, but branch-specific stalls.
- *
- * NOTE on reset(): mirrors mips.js's RES() exactly — it clears this hook's
- * own bookkeeping (pc/stage/vals/history) but does NOT zero register or
- * memory values, since RES() in the original never did either (it only
- * resets marks). Zeroing actual values is a fresh useRegisterBank/
+ * NOTE on reset(): mirrors mips.js's RES() — it clears this hook's own
+ * bookkeeping (timeline, pc/stage/vals) but does NOT zero register or
+ * memory values. Zeroing actual values is a fresh useRegisterBank/
  * useMemoryBank instance's job (a remount), same as the original.
  */
-import { useCallback, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { int32 } from "../lib/Numbers/int32";
-import type { RegisterBank } from "./useRegisterBank";
-import type { MemoryBank } from "./useMemoryBank";
+import type { RegisterBank, RegisterSnapshot } from "./useRegisterBank";
+import type { MemoryBank, MemorySnapshot } from "./useMemoryBank";
 import { canRun, execStage, type ProgramLine } from "../lib/mips-machine/interpreter";
 import type { CycleStage, MachineState, ValsSnapshot } from "../lib/mips-machine/machineState";
-import { PipelineEngine, type CycleResult, type PipelineSlotView } from "../lib/mips-machine/pipeline";
+import {
+  PipelineEngine,
+  type BaseReaders,
+  type PipelineEngineSnapshot,
+  type PipelineSlotView,
+} from "../lib/mips-machine/pipeline";
 
 const STAGES: CycleStage[] = ["F", "D", "A", "M", "R"];
 
+/** How many steps are computed ahead when a timeline is built. Runs that
+ * are longer (e.g. an endless loop) stop here; step() at the end of the
+ * timeline keeps extending it one step at a time. */
+export const MAX_PRECOMPUTED_STEPS = 5000;
+
+// Stable empties, so memos keyed on pipelineSlots don't rerun every render.
+const NO_SLOTS: PipelineSlotView[] = [];
+const NO_BUBBLES: CycleStage[] = [];
+
+/** The whole machine at one moment. */
+interface LiveSnapshot {
+  regs: RegisterSnapshot;
+  mem: MemorySnapshot;
+  pc: number;
+  stageIdx: number;
+  vals: ValsSnapshot;
+  halted: boolean;
+  engine: PipelineEngineSnapshot | null;
+}
+
+/** One position on the timeline, as the UI sees it. */
+export interface TimelineFrame {
+  /** The step's MachineState; null for frame 0 (before the first step). */
+  state: MachineState | null;
+  /** Pipeline mode: the instructions in flight that cycle. */
+  slots: PipelineSlotView[];
+  /** Pipeline mode: stages holding a bubble that cycle. */
+  bubbles: CycleStage[];
+}
+
+interface Frame extends TimelineFrame {
+  snap: LiveSnapshot;
+}
+
+type StepResult = TimelineFrame & { state: MachineState };
+
 export interface MachineHistory {
-  /** Every MachineState produced so far, oldest first. */
+  /** Every MachineState on the timeline, oldest first (frames 1..n). */
   history: MachineState[];
-  /** The most recent state, or null before the first step(). */
+  /** Every frame, including frame 0 (before the first step): index =
+   * position. */
+  timeline: TimelineFrame[];
+  /** The frame on screen: 0 before the first step, i after step i. */
+  position: number;
+  /** The MachineState on screen, or null at position 0. */
   current: MachineState | null;
-  /** False once the program has run off the end or hit an error. */
+  /** False at the end of the timeline once the program has run off the end
+   * or hit an error. */
   canStep: boolean;
-  /** Pipeline mode only: the instructions in flight this cycle, one per
-   * occupied stage. Empty in single-cycle mode and before the first step.
-   * In pipeline mode `current` is a one-state summary of the same cycle
-   * (see pipeline.ts's CycleResult.summary). */
+  /** False at position 0. */
+  canStepBack: boolean;
+  /** True when the timeline runs all the way to the end of the program
+   * (false while it stops at MAX_PRECOMPUTED_STEPS). */
+  complete: boolean;
+  /** Pipeline mode only: the instructions in flight on screen. Empty in
+   * single-cycle mode and at position 0. */
   pipelineSlots: PipelineSlotView[];
-  /** Pipeline mode only: stages holding a stall's bubble this cycle. */
+  /** Pipeline mode only: stages holding a bubble on screen. */
   pipelineBubbles: CycleStage[];
-  /** Runs exactly one F/D/A/M/R micro-step (pipeline mode: one clock
-   * cycle) and appends it to history. */
+  /** Memory words read or written anywhere on the timeline. */
+  touchedWords: Set<number>;
+  /** One step forward (one F/D/A/M/R micro-step, or one clock cycle). */
   step: () => void;
-  /** Clears history/pc/stage/vals (see the NOTE above — does not touch
-   * register/memory values). */
+  /** One step back. */
+  stepBack: () => void;
+  /** Jump to a frame (clamped to the timeline). */
+  seek: (position: number) => void;
+  /** Clears the timeline and pc/stage/vals (see the NOTE above — does not
+   * touch register/memory values). */
   reset: () => void;
+  /** Call after editing a register or memory word by hand: the edit becomes
+   * part of the frame on screen and everything after it is recomputed. */
+  rebase: () => void;
 }
 
 export function useMachineHistory(
@@ -83,26 +151,70 @@ export function useMachineHistory(
   const stageIdxRef = useRef(0);
   const valsRef = useRef<ValsSnapshot>({});
   const haltedRef = useRef(false);
-  const [history, setHistory] = useState<MachineState[]>([]);
-  // Pipeline mode: created on the first step after a reset(), so it always
+  // Pipeline mode: created on the first step after a reset, so it always
   // runs the current program.
   const engineRef = useRef<PipelineEngine | null>(null);
-  const [pipelineSlots, setPipelineSlots] = useState<PipelineSlotView[]>([]);
-  const [pipelineBubbles, setPipelineBubbles] = useState<CycleStage[]>([]);
 
-  const stepPipeline = useCallback((): void => {
-    if (haltedRef.current) return;
-    if (!engineRef.current) {
-      engineRef.current = new PipelineEngine(program, {
-        peekReg: regBank.peek,
-        peekWord: memBank.peekWord,
-        memSize: memBank.size,
-      });
-    }
-    const result: CycleResult | null = engineRef.current.step(hazardUnit, earlyBranch);
+  const framesRef = useRef<Frame[]>([]);
+  const positionRef = useRef(0);
+  // Whether the machine at the last frame can still step.
+  const headOpenRef = useRef(false);
+  // The hazard settings the frames after the one on screen were built with.
+  const settingsRef = useRef({ hazardUnit, earlyBranch });
+  const [position, setPosition] = useState(0);
+  // Bumped whenever framesRef's contents change, to re-derive the timeline.
+  const [version, setVersion] = useState(0);
+
+  const baseReaders: BaseReaders = useMemo(
+    () => ({ peekReg: regBank.peek, peekWord: memBank.peekWord, memSize: memBank.size }),
+    [regBank.peek, memBank.peekWord, memBank.size],
+  );
+
+  function show(pos: number, framesChanged: boolean): void {
+    positionRef.current = pos;
+    setPosition(pos);
+    if (framesChanged) setVersion((v) => v + 1);
+  }
+
+  // ---- Snapshots -----------------------------------------------------------
+
+  function capture(): LiveSnapshot {
+    return {
+      regs: regBank.snapshot(),
+      mem: memBank.snapshot(),
+      pc: pcRef.current,
+      stageIdx: stageIdxRef.current,
+      vals: valsRef.current,
+      halted: haltedRef.current,
+      engine: engineRef.current ? engineRef.current.snapshot() : null,
+    };
+  }
+
+  function apply(snap: LiveSnapshot): void {
+    regBank.restore(snap.regs);
+    memBank.restore(snap.mem);
+    pcRef.current = snap.pc;
+    stageIdxRef.current = snap.stageIdx;
+    valsRef.current = snap.vals;
+    haltedRef.current = snap.halted;
+    engineRef.current = snap.engine ? PipelineEngine.restore(program, baseReaders, snap.engine) : null;
+  }
+
+  // ---- Executing one step on the live machine ------------------------------
+
+  function canContinue(): boolean {
+    if (haltedRef.current) return false;
+    if (pipeline) return engineRef.current ? engineRef.current.canStep() : canRun(program, 0);
+    return canRun(program, pcRef.current);
+  }
+
+  function stepPipeline(): StepResult | null {
+    if (haltedRef.current) return null;
+    if (!engineRef.current) engineRef.current = new PipelineEngine(program, baseReaders);
+    const result = engineRef.current.step(hazardUnit, earlyBranch);
     if (!result) {
       haltedRef.current = true;
-      return;
+      return null;
     }
 
     regBank.RES();
@@ -134,16 +246,14 @@ export function useMachineHistory(
       error = error ?? (err instanceof Error ? err.message : String(err));
     }
 
-    setPipelineSlots(result.slots);
-    setPipelineBubbles(result.bubbles);
-    setHistory((prev) => [...prev, { ...result.summary, error }]);
     if (error) haltedRef.current = true;
-  }, [program, regBank, memBank, hazardUnit, earlyBranch]);
+    return { state: { ...result.summary, error }, slots: result.slots, bubbles: result.bubbles };
+  }
 
-  const stepSingle = useCallback((): void => {
+  function stepSingle(): StepResult | null {
     if (haltedRef.current || !canRun(program, pcRef.current)) {
       haltedRef.current = true;
-      return;
+      return null;
     }
 
     regBank.RES();
@@ -168,17 +278,16 @@ export function useMachineHistory(
         // Same "self-contained error, not a thrown exception the caller
         // must catch" contract as execStage's own readonly-register check
         // — anything the banks themselves reject (e.g. an out-of-range
-        // store) still ends up as `error` on the pushed state.
+        // store) still ends up as `error` on the state.
         state = { ...state, error: err instanceof Error ? err.message : String(err) };
       }
     }
 
     valsRef.current = state.vals;
-    setHistory((prev) => [...prev, state]);
 
     if (state.error) {
       haltedRef.current = true;
-      return;
+      return { state, slots: [], bubbles: [] };
     }
 
     if (stage === "R") {
@@ -190,35 +299,152 @@ export function useMachineHistory(
     } else {
       stageIdxRef.current += 1;
     }
-  }, [program, regBank, memBank]);
+    return { state, slots: [], bubbles: [] };
+  }
 
-  const step = pipeline ? stepPipeline : stepSingle;
+  const stepLive = pipeline ? stepPipeline : stepSingle;
 
-  const reset = useCallback((): void => {
+  // ---- Building the timeline -----------------------------------------------
+
+  /** Appends up to `limit` frames. The live machine must be at the last
+   * frame. */
+  function extend(limit: number): void {
+    const frames = framesRef.current;
+    for (let n = 0; n < limit && canContinue(); n++) {
+      const result = stepLive();
+      if (!result) break;
+      frames.push({ ...result, snap: capture() });
+    }
+    headOpenRef.current = canContinue();
+  }
+
+  /** Drops every frame after `p` and computes them again from frame p
+   * (with the current hazard settings), then shows frame p. */
+  function rebuildFrom(p: number): void {
+    const frames = framesRef.current;
+    if (frames.length === 0) return;
+    const at = Math.min(p, frames.length - 1);
+    frames.length = at + 1;
+    apply(frames[at].snap);
+    extend(Math.max(0, MAX_PRECOMPUTED_STEPS - at));
+    // Each step above queued its own bank display updates; this restore is
+    // queued last, so it's the one that ends up on screen.
+    apply(frames[at].snap);
+    settingsRef.current = { hazardUnit, earlyBranch };
+    show(at, true);
+  }
+
+  /** A new timeline starting from the banks' current values. */
+  function rebuildAll(): void {
     pcRef.current = 0;
     stageIdxRef.current = 0;
     valsRef.current = {};
     haltedRef.current = false;
     engineRef.current = null;
-    setPipelineSlots([]);
-    setPipelineBubbles([]);
-    setHistory([]);
+    framesRef.current = [{ state: null, slots: [], bubbles: [], snap: capture() }];
+    rebuildFrom(0);
+  }
+
+  // A new program or execution mode: build its whole timeline.
+  useEffect(() => {
+    rebuildAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [program, pipeline]);
+
+  // Hazard settings changed: the cycles after the one on screen change.
+  useEffect(() => {
+    const prev = settingsRef.current;
+    if (prev.hazardUnit === hazardUnit && prev.earlyBranch === earlyBranch) return;
+    settingsRef.current = { hazardUnit, earlyBranch };
+    if (!pipeline || framesRef.current.length === 0) return;
+    rebuildFrom(positionRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hazardUnit, earlyBranch]);
+
+  // ---- Navigation ------------------------------------------------------------
+
+  function seek(target: number): void {
+    const frames = framesRef.current;
+    if (frames.length === 0) return;
+    const p = Math.max(0, Math.min(frames.length - 1, Math.round(target)));
+    if (p === positionRef.current) return;
+    apply(frames[p].snap);
+    show(p, false);
+  }
+
+  function step(): void {
+    const frames = framesRef.current;
+    if (frames.length === 0) return;
+    const p = positionRef.current;
+    if (p < frames.length - 1) {
+      seek(p + 1);
+      return;
+    }
+    // At the end of the timeline (a run longer than MAX_PRECOMPUTED_STEPS):
+    // compute one more step. The live machine is already at this frame.
+    const result = canContinue() ? stepLive() : null;
+    if (result) frames.push({ ...result, snap: capture() });
+    headOpenRef.current = canContinue();
+    show(result ? p + 1 : p, true);
+  }
+
+  function stepBack(): void {
+    seek(positionRef.current - 1);
+  }
+
+  function reset(): void {
+    pcRef.current = 0;
+    stageIdxRef.current = 0;
+    valsRef.current = {};
+    haltedRef.current = false;
+    engineRef.current = null;
+    framesRef.current = [];
+    headOpenRef.current = false;
     regBank.WR("pc", int32.num(0));
-  }, [regBank]);
+    show(0, true);
+  }
+
+  function rebase(): void {
+    const frames = framesRef.current;
+    if (frames.length === 0) return;
+    const p = positionRef.current;
+    frames[p] = { ...frames[p], snap: capture() };
+    rebuildFrom(p);
+  }
+
+  // ---- Derived views -----------------------------------------------------------
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const frames = useMemo(() => framesRef.current.slice(), [version]);
+  const history = useMemo(() => frames.slice(1).map((f) => f.state as MachineState), [frames]);
+  const touchedWords = useMemo(() => {
+    const touched = new Set<number>();
+    for (const f of frames) {
+      f.snap.mem.marks.forEach((mark, i) => {
+        if (mark !== "default") touched.add(i);
+      });
+    }
+    return touched;
+  }, [frames]);
+
+  const frame = frames[position] ?? null;
+  const atHead = frames.length > 0 && position >= frames.length - 1;
 
   return {
     history,
-    current: history.length > 0 ? history[history.length - 1] : null,
-    pipelineSlots,
-    pipelineBubbles,
-    canStep:
-      !haltedRef.current &&
-      (pipeline
-        ? engineRef.current
-          ? engineRef.current.canStep()
-          : canRun(program, 0)
-        : canRun(program, pcRef.current)),
+    timeline: frames,
+    position,
+    current: frame?.state ?? null,
+    canStep: frames.length > 0 && (!atHead || headOpenRef.current),
+    canStepBack: position > 0,
+    complete: frames.length > 0 && !headOpenRef.current,
+    pipelineSlots: frame?.slots ?? NO_SLOTS,
+    pipelineBubbles: frame?.bubbles ?? NO_BUBBLES,
+    touchedWords,
     step,
+    stepBack,
+    seek,
     reset,
+    rebase,
   };
 }

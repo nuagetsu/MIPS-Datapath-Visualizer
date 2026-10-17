@@ -8,15 +8,19 @@
  * This file is the piece of glue mips.js's parse()/exec() used to be:
  *   - Parse button: source -> parseMips() -> check() -> assemble() -> a
  *     ProgramLine[] for useMachineHistory, plus the assembled listing and
- *     initial .data memory contents.
- *   - Step/Play/Pause: drive useMachineHistory's step(), and mirror each
- *     resulting MachineState out to the code editor's mark/next/err
- *     gutters, the console log, and (see syncDisplays below) the vals/
- *     control tables' own mark-based bank hooks.
+ *     initial .data memory contents. useMachineHistory then computes the
+ *     whole run as a timeline.
+ *   - Back/Step/Play and the scrubber (Scrubber.tsx) move through that
+ *     timeline — forwards, backwards, or straight to any step — and every
+ *     MachineState shown is mirrored out to the code editor's mark/next/err
+ *     gutters, the console, and (see the effect below) the vals/control
+ *     tables' own mark-based bank hooks.
  *
  * Register/memory values are the real source of truth (useRegisterBank/
- * useMemoryBank, committed to by useMachineHistory). Vals/control table
- * marks are re-derived from each new MachineState — see the effect below.
+ * useMemoryBank); seeking restores them to the step on screen. Editing a
+ * register or memory word by hand rebases the timeline on the edit (see
+ * useMachineHistory's rebase()). Vals/control table marks are re-derived
+ * from each MachineState shown.
  *
  * Values tray filtering: by default the register, memory and control tables
  * only list what the assembled program refers to (see programRefs.ts): its
@@ -28,7 +32,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AceEditorPanel } from "./AceEditorPanel";
 import { useAceEditor, type AceEditorHandle } from "../hooks/useAceEditor";
-import { useRegisterBank } from "../hooks/useRegisterBank";
+import { useRegisterBank, type RegisterBank } from "../hooks/useRegisterBank";
 import { useMemoryBank, type MemoryBank } from "../hooks/useMemoryBank";
 import { useCtrlBank } from "../hooks/useControlBank";
 import { useValsBank } from "../hooks/useValsBank";
@@ -38,6 +42,7 @@ import { MemoryTable } from "./MemoryTable";
 import { ValsTable } from "./ValsTable";
 import { ControlTable, type ForwardingRowsData } from "./ControlTable";
 import { DatapathDiagram, PIPELINE_WIRE_COLOURS } from "./DatapathDiagram";
+import { Scrubber } from "./Scrubber";
 import { parseMips } from "../lib/mips-parser";
 import mipsUtil, { check, assemble } from "../lib/mips-parser/mips-util";
 import { int32 } from "../lib/Numbers/int32";
@@ -281,9 +286,9 @@ export function App() {
   // the forwarding signals to the Control table, and turns on the hazard
   // detection unit and predict-not-taken fetching: load-use hazards stall,
   // taken branches and jumps flush (see also early branches below). Toggling it
-  // doesn't restart the run: it only affects the cycles that follow. Only
-  // offered in pipeline mode; the choice is remembered while pipeline mode
-  // is off.
+  // doesn't restart the run: it recomputes the cycles after the one on
+  // screen. Only offered in pipeline mode; the choice is remembered while
+  // pipeline mode is off.
   const [showHazards, setShowHazards] = useState(false);
   const hazards = showPipeline && showHazards;
   // Early branches (within hazards mode): resolve branches and jumps in ID,
@@ -311,6 +316,8 @@ export function App() {
   // Memory words read or written since the last Assemble — addresses a
   // program computes at run time can't be known from its source, so they
   // join the memory table the first time they're touched, and stay.
+  // (Words touched anywhere on the precomputed timeline are added too, via
+  // machine.touchedWords, so rows don't pop in while scrubbing.)
   const [touchedMemory, setTouchedMemory] = useState<Set<number>>(() => new Set());
 
   const dispContainerRef = useRef<HTMLDivElement>(null);
@@ -330,6 +337,25 @@ export function App() {
   const valsBank = useValsBank();
   const machine = useMachineHistory(program, regBank, memBank, showPipeline, hazards, earlyBranch);
 
+  // The tables edit the banks through these: a hand edit becomes part of
+  // the step on screen, and the rest of the timeline is recomputed from it.
+  const tableRegBank: RegisterBank = {
+    ...regBank,
+    trySave: (name, text) => {
+      const ok = regBank.trySave(name, text);
+      if (ok) machine.rebase();
+      return ok;
+    },
+  };
+  const tableMemBank: MemoryBank = {
+    ...memBank,
+    trySave: (wordIndex, text) => {
+      const ok = memBank.trySave(wordIndex, text);
+      if (ok) machine.rebase();
+      return ok;
+    },
+  };
+
   // Any memory cell marked this render (read = success, written = warning,
   // bad edit = danger) has been touched: remember it.
   useEffect(() => {
@@ -344,8 +370,11 @@ export function App() {
     [showAllValues, programRefs],
   );
   const shownWords = useMemo(
-    () => (showAllValues || programRefs === null ? null : new Set([...programRefs.memoryWords, ...touchedMemory])),
-    [showAllValues, programRefs, touchedMemory],
+    () =>
+      showAllValues || programRefs === null
+        ? null
+        : new Set([...programRefs.memoryWords, ...touchedMemory, ...machine.touchedWords]),
+    [showAllValues, programRefs, touchedMemory, machine.touchedWords],
   );
   const shownKinds = useMemo(
     () => (showAllValues || programRefs === null ? null : programRefs.ops),
@@ -406,12 +435,16 @@ export function App() {
   // ref instead of depending on the object directly.
   const actionsRef = useRef({ codeEditor, dispEditor, consEditor, valsBank, ctrlBank, step: machine.step, programSourceLines, pipelineSlots: machine.pipelineSlots });
   actionsRef.current = { codeEditor, dispEditor, consEditor, valsBank, ctrlBank, step: machine.step, programSourceLines, pipelineSlots: machine.pipelineSlots };
+  // Whether the console/editor currently show a run-time error (from the
+  // step on screen), so scrubbing away from that step can clear it again.
+  const showingRunErrorRef = useRef(false);
 
   // ---- Parse / assemble --------------------------------------------------
   const handleParse = useCallback(() => {
     if (!codeEditor || !dispEditor || !consEditor) return;
     setPlaying(false);
     consEditor.load("");
+    showingRunErrorRef.current = false;
 
     const result = parseMips(codeEditor.value());
     if (!result.ok) {
@@ -440,6 +473,8 @@ export function App() {
       dispEditor.load(mipsUtil.print(assembled));
       codeEditor.reset();
       dispEditor.reset();
+      // The new program's timeline is built once setProgram lands (see
+      // useMachineHistory), starting from the values in the banks now.
       machine.reset();
       setProgram(programLines);
       setProgramSourceLines(sourceLines);
@@ -453,10 +488,23 @@ export function App() {
     }
   }, [codeEditor, dispEditor, consEditor, memBank, machine]);
 
-  // ---- Step ---------------------------------------------------------
+  // ---- Step / Back / Seek ---------------------------------------------
   const handleStep = useCallback(() => {
     machine.step();
   }, [machine]);
+
+  const handleStepBack = useCallback(() => {
+    setPlaying(false);
+    machine.stepBack();
+  }, [machine]);
+
+  const handleSeek = useCallback(
+    (position: number) => {
+      setPlaying(false);
+      machine.seek(position);
+    },
+    [machine],
+  );
 
   // Play loop
   useEffect(() => {
@@ -468,9 +516,9 @@ export function App() {
     const id = window.setTimeout(() => actionsRef.current.step(), speedMs);
     return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, machine.current, speedMs]);
+  }, [playing, machine.position, machine.canStep, speedMs]);
 
-  // ---- Mirror every new MachineState out to the editors + tables --------
+  // ---- Mirror the MachineState on screen out to the editors + tables ------
   useEffect(() => {
     const state = machine.current;
     const { codeEditor, consEditor, valsBank, ctrlBank, programSourceLines, pipelineSlots } = actionsRef.current;
@@ -478,9 +526,20 @@ export function App() {
     ctrlBank.RES();
     valsBank.RES();
 
-    // Before the first step (e.g. right after a reset or a mode switch),
-    // clear any pipeline dots left from the previous run.
-    if (!state) codeEditor?.markColours([]);
+    // Clear a run-time error shown for another step.
+    if (showingRunErrorRef.current && !state?.error) {
+      consEditor?.load("");
+      codeEditor?.err(-1);
+      showingRunErrorRef.current = false;
+    }
+
+    // Before the first step (the scrubber's start, or right after a reset
+    // or a mode switch): no instruction is current.
+    if (!state) {
+      codeEditor?.markColours([]);
+      codeEditor?.mark(-1);
+      codeEditor?.next(-1);
+    }
     if (!state || !codeEditor || !consEditor) return;
 
     const editorLine = programSourceLines[state.pc] ?? state.pc; // keep track of line numbers disregarding labels
@@ -507,8 +566,12 @@ export function App() {
     }
 
     if (state.error) {
+      // Shown fresh each time this step comes on screen (it may be visited
+      // many times while scrubbing), rather than appended.
+      consEditor.load("");
       consEditor.log(state.error);
       codeEditor.err(editorLine);
+      showingRunErrorRef.current = true;
       setPlaying(false);
       return;
     }
@@ -546,7 +609,12 @@ export function App() {
         <h1>MIPS Datapath Simulator</h1>
         <div className="app-toolbar-controls">
           <button onClick={handleParse}>Assemble</button>
-          <button onClick={handleStep} disabled={!machine.canStep}>Step</button>
+          <button onClick={handleStepBack} disabled={!machine.canStepBack} title="One step back">
+            Back
+          </button>
+          <button onClick={handleStep} disabled={!machine.canStep} title="One step forward">
+            Step
+          </button>
           <button onClick={() => setPlaying((p) => !p)} disabled={!machine.canStep && !playing}>
             {playing ? "Pause" : "Play"}
           </button>
@@ -565,7 +633,7 @@ export function App() {
             // Pipeline mode: which instruction is in each stage this cycle,
             // in the same colour as its wires.
             <span className="app-stage-indicator">
-              cycle={machine.history.length}
+              cycle={machine.position}
               {(["F", "D", "A", "M", "R"] as CycleStage[]).map((stage) => {
                 const slot = machine.pipelineSlots.find((s) => s.stage === stage);
                 const bubble = machine.pipelineBubbles.includes(stage);
@@ -592,6 +660,13 @@ export function App() {
             </span>
           )}
         </div>
+        <Scrubber
+          timeline={machine.timeline}
+          position={machine.position}
+          pipeline={showPipeline}
+          complete={machine.complete}
+          onSeek={handleSeek}
+        />
         {/* <div className="app-feedback-group">
           <h1 className="app-feedback-link-label">We would appreciate it if you provided your feedback here: </h1>
           <a
@@ -641,9 +716,11 @@ export function App() {
               className={showPipeline ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
               onClick={() => {
                 // The two modes step differently (micro-step vs. clock
-                // cycle), so a run in progress can't carry over: start it
-                // again from the first instruction, as Assemble does.
+                // cycle), so a run in progress can't carry over: rewind to
+                // the start (putting the starting register/memory values
+                // back) and build the other mode's timeline from there.
                 setPlaying(false);
+                machine.seek(0);
                 machine.reset();
                 setShowPipeline((p) => !p);
               }}
@@ -744,10 +821,10 @@ export function App() {
                 )}
               </div>
 
-              {visibleTables.registers && <RegisterTable bank={regBank} shownRegs={shownRegs} />}
+              {visibleTables.registers && <RegisterTable bank={tableRegBank} shownRegs={shownRegs} />}
               {visibleTables.datapath && <ValsTable bank={valsBank} />}
               {visibleTables.control && <ControlTable bank={ctrlBank} forwarding={forwardingRows} shownKinds={shownKinds} />}
-              {visibleTables.memory && <MemoryTable bank={memBank} shownWords={shownWords} />}
+              {visibleTables.memory && <MemoryTable bank={tableMemBank} shownWords={shownWords} />}
               {noTablesShown && <div className="app-tables-filter-note">All tables are hidden. Pick one above to show it.</div>}
             </section>
           )}

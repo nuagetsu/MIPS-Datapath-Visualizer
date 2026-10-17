@@ -67,6 +67,11 @@
  * EX stages are computed against the pending state, but never MEM or WB,
  * so they read registers but can't change anything.
  *
+ * Timeline scrubbing: snapshot() captures the engine's complete state
+ * between cycles, and PipelineEngine.restore() builds an engine back from
+ * one, so useMachineHistory can rewind to any earlier cycle and carry on
+ * from there (e.g. after the hazard toggles change).
+ *
  * Pure: no React, no banks — reads come in through BaseReaders.
  */
 import { int32, type Int32Bits } from "../Numbers/int32";
@@ -199,13 +204,23 @@ export function stallReason(
 
 // ---- PendingState: committed state + in-flight writes -------------------
 
-interface Pending {
+export interface Pending {
   bits: Int32Bits;
   /** In-flight writes to this location not yet committed to the real
    * bank. The entry is dropped when this reaches 0, so the real bank is
    * the source of truth again (and any manual edit made in the register or
    * memory table between steps is respected). */
   count: number;
+}
+
+/** A PendingState's in-flight writes, copied — see snapshot()/load(). */
+export interface PendingSnapshot {
+  regs: [string, Pending][];
+  words: [number, Pending][];
+}
+
+function copyEntries<K>(map: Map<K, Pending>): [K, Pending][] {
+  return [...map].map(([k, v]) => [k, { ...v }]);
 }
 
 export class PendingState {
@@ -217,6 +232,18 @@ export class PendingState {
   constructor(base: BaseReaders) {
     this.base = base;
     this.wordCount = Math.floor(base.memSize / 4);
+  }
+
+  /** A copy of the in-flight writes (entries are copied too: release()
+   * mutates their counts in place). */
+  snapshot(): PendingSnapshot {
+    return { regs: copyEntries(this.regs), words: copyEntries(this.words) };
+  }
+
+  /** Replaces the in-flight writes with a copy of `snap`'s. */
+  load(snap: PendingSnapshot): void {
+    this.regs = new Map(snap.regs.map(([k, v]) => [k, { ...v }]));
+    this.words = new Map(snap.words.map(([k, v]) => [k, { ...v }]));
   }
 
   private checkRange(op: string, addr: number): number {
@@ -284,7 +311,7 @@ function release<K>(map: Map<K, Pending>, key: K): void {
 
 // ---- precompute: one instruction, all five stages -----------------------
 
-interface Precomputed {
+export interface Precomputed {
   /** One MachineState per stage reached; shorter than 5 if a stage errored
    * (that state is the last one and carries the error). */
   states: MachineState[];
@@ -344,7 +371,7 @@ export function precompute(program: ProgramLine[], pc: number, pending: PendingS
 
 // ---- The engine ------------------------------------------------------------
 
-interface Slot extends Precomputed {
+export interface Slot extends Precomputed {
   seq: number;
   pc: number;
   stageIdx: number;
@@ -354,6 +381,19 @@ interface Slot extends Precomputed {
   /** A taken branch or jump fetched with prediction on: when it reaches
    * the stage it resolves in, the doomed slots behind it are flushed. */
   redirect?: boolean;
+}
+
+/** Everything a PipelineEngine holds between cycles — see snapshot(). */
+export interface PipelineEngineSnapshot {
+  slots: Slot[];
+  bubbles: number[];
+  nextPc: number | null;
+  predictPc: number | null;
+  awaitingRedirect: boolean;
+  seq: number;
+  halted: boolean;
+  pcParked: boolean;
+  pending: PendingSnapshot;
 }
 
 const ID_IDX = 1;
@@ -438,6 +478,39 @@ export class PipelineEngine {
   constructor(program: ProgramLine[], base: BaseReaders) {
     this.program = program;
     this.pending = new PendingState(base);
+  }
+
+  /** A copy of this engine's whole state between cycles. Slots are copied
+   * (step() flips `redirect` on them in place); their precomputed states,
+   * reads and wires are never mutated, so those are shared. */
+  snapshot(): PipelineEngineSnapshot {
+    return {
+      slots: this.slots.map((s) => ({ ...s })),
+      bubbles: [...this.bubbles],
+      nextPc: this.nextPc,
+      predictPc: this.predictPc,
+      awaitingRedirect: this.awaitingRedirect,
+      seq: this.seq,
+      halted: this.halted,
+      pcParked: this.pcParked,
+      pending: this.pending.snapshot(),
+    };
+  }
+
+  /** A new engine in the state `snap` was taken in. `snap` itself is left
+   * untouched, so it can be restored again later. */
+  static restore(program: ProgramLine[], base: BaseReaders, snap: PipelineEngineSnapshot): PipelineEngine {
+    const engine = new PipelineEngine(program, base);
+    engine.slots = snap.slots.map((s) => ({ ...s }));
+    engine.bubbles = [...snap.bubbles];
+    engine.nextPc = snap.nextPc;
+    engine.predictPc = snap.predictPc;
+    engine.awaitingRedirect = snap.awaitingRedirect;
+    engine.seq = snap.seq;
+    engine.halted = snap.halted;
+    engine.pcParked = snap.pcParked;
+    engine.pending.load(snap.pending);
+    return engine;
   }
 
   private canFetch(): boolean {

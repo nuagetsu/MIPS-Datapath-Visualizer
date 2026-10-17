@@ -8,6 +8,10 @@
  *      (sign-extend, confirmed to exist in the real bit.js) was clearly
  *      the intended tool — sign() just never got used at its one real
  *      call site.
+ *
+ * Timeline scrubbing: like useRegisterBank, marks are mirrored into a ref
+ * so snapshot()/restore() can capture and put back each word's value and
+ * read/write mark synchronously (see useMachineHistory).
  */
 import { useCallback, useRef, useState } from "react";
 import { int32, type Int32Bits } from "../lib/Numbers/int32";
@@ -30,6 +34,12 @@ export interface MemoryCellDisplay {
   mark: MarkStatus;
 }
 
+/** Every word's value and mark at one moment — see snapshot()/restore(). */
+export interface MemorySnapshot {
+  bits: Int32Bits[];
+  marks: MarkStatus[];
+}
+
 export interface MemoryBank {
   size: number;
   /** Indexed by word number (address / 4), not by byte address. */
@@ -49,6 +59,10 @@ export interface MemoryBank {
   RES: () => void;
   setBase: (wordIndex: number, base: DisplayBase) => void;
   trySave: (wordIndex: number, text: string) => boolean;
+  /** Every word's current value and mark, read synchronously. */
+  snapshot: () => MemorySnapshot;
+  /** Puts back the values and marks from snapshot(); display bases stay. */
+  restore: (snap: MemorySnapshot) => void;
 }
 
 export function useMemoryBank(size = 256): MemoryBank {
@@ -56,6 +70,7 @@ export function useMemoryBank(size = 256): MemoryBank {
   const bitsRef = useRef<Int32Bits[]>(
     Array.from({ length: wordCount }, () => int32.num(0)),
   );
+  const marksRef = useRef<MarkStatus[]>(new Array(wordCount).fill("default") as MarkStatus[]);
   const baseRef = useRef<DisplayBase[]>(new Array(wordCount).fill("hex") as DisplayBase[]);
   const [cells, setCells] = useState<MemoryCellDisplay[]>(() =>
     Array.from({ length: wordCount }, () => ({
@@ -66,7 +81,15 @@ export function useMemoryBank(size = 256): MemoryBank {
   );
 
   const markCell = useCallback((w: number, mark: MarkStatus) => {
+    marksRef.current[w] = mark;
     setCells((prev) => prev.map((c, i) => (i === w ? { ...c, mark } : c)));
+  }, []);
+
+  /** Sets a word's bits and marks it written ("warning"). */
+  const writeCell = useCallback((w: number, bits: Int32Bits) => {
+    bitsRef.current[w] = bits;
+    marksRef.current[w] = "warning";
+    setCells((prev) => prev.map((c, i) => (i === w ? { ...c, bits, mark: "warning" } : c)));
   }, []);
 
   const checkRange = useCallback(
@@ -92,11 +115,9 @@ export function useMemoryBank(size = 256): MemoryBank {
     (addr: number, bits: Int32Bits): void => {
       if (addr % 4 !== 0) throw unalignedMem("SW", addr);
       checkRange("SW", addr);
-      const w = wordIndexOf(addr);
-      bitsRef.current[w] = bits;
-      setCells((prev) => prev.map((c, i) => (i === w ? { ...c, bits, mark: "warning" } : c)));
+      writeCell(wordIndexOf(addr), bits);
     },
-    [checkRange],
+    [checkRange, writeCell],
   );
 
   const lb = useCallback(
@@ -118,11 +139,9 @@ export function useMemoryBank(size = 256): MemoryBank {
       checkRange("SB", addr);
       const w = wordIndexOf(addr);
       const offs = byteOffsetOf(addr);
-      const next = setByteBits(bitsRef.current[w], offs, val);
-      bitsRef.current[w] = next;
-      setCells((prev) => prev.map((c, i) => (i === w ? { ...c, bits: next, mark: "warning" } : c)));
+      writeCell(w, setByteBits(bitsRef.current[w], offs, val));
     },
-    [checkRange],
+    [checkRange, writeCell],
   );
 
   const ulw = useCallback(
@@ -151,16 +170,15 @@ export function useMemoryBank(size = 256): MemoryBank {
       for (const off of [0, 1, 2, 3]) {
         const a = addr + off;
         const w = wordIndexOf(a);
-        const next = setByteBits(bitsRef.current[w], byteOffsetOf(a), v);
-        bitsRef.current[w] = next;
-        setCells((prev) => prev.map((c, i) => (i === w ? { ...c, bits: next, mark: "warning" } : c)));
+        writeCell(w, setByteBits(bitsRef.current[w], byteOffsetOf(a), v));
         v = int32.srl(v, 8);
       }
     },
-    [wordCount],
+    [wordCount, writeCell],
   );
 
   const RES = useCallback((): void => {
+    marksRef.current.fill("default");
     setCells((prev) => prev.map((c) => ({ ...c, mark: "default" })));
   }, []);
 
@@ -169,17 +187,30 @@ export function useMemoryBank(size = 256): MemoryBank {
     setCells((prev) => prev.map((c, i) => (i === wordIndex ? { ...c, base } : c)));
   }, []);
 
-  const trySave = useCallback((wordIndex: number, text: string): boolean => {
-    const base = baseRef.current[wordIndex] ?? "hex";
-    try {
-      const bits = base === "hex" ? int32.hex(text) : int32.dec(text);
-      bitsRef.current[wordIndex] = bits;
-      setCells((prev) => prev.map((c, i) => (i === wordIndex ? { ...c, bits, mark: "warning" } : c)));
-      return true;
-    } catch {
-      setCells((prev) => prev.map((c, i) => (i === wordIndex ? { ...c, mark: "danger" } : c)));
-      return false;
-    }
+  const trySave = useCallback(
+    (wordIndex: number, text: string): boolean => {
+      const base = baseRef.current[wordIndex] ?? "hex";
+      try {
+        const bits = base === "hex" ? int32.hex(text) : int32.dec(text);
+        writeCell(wordIndex, bits);
+        return true;
+      } catch {
+        markCell(wordIndex, "danger");
+        return false;
+      }
+    },
+    [writeCell, markCell],
+  );
+
+  const snapshot = useCallback(
+    (): MemorySnapshot => ({ bits: [...bitsRef.current], marks: [...marksRef.current] }),
+    [],
+  );
+
+  const restore = useCallback((snap: MemorySnapshot): void => {
+    bitsRef.current = [...snap.bits];
+    marksRef.current = [...snap.marks];
+    setCells((prev) => prev.map((c, i) => ({ ...c, bits: snap.bits[i] ?? c.bits, mark: snap.marks[i] ?? "default" })));
   }, []);
 
   return {
@@ -196,5 +227,7 @@ export function useMemoryBank(size = 256): MemoryBank {
     RES,
     setBase,
     trySave,
+    snapshot,
+    restore,
   };
 }
