@@ -3,30 +3,35 @@ import { KIND, CONTROLS } from "../lib/mips-machine/ctrl";
 import { formatControlBits, type CtrlBank, type MarkStatus } from "../hooks/useControlBank";
 import "./ControlTable.css";
 
-/** This cycle's forwarding-unit outputs, for the two extra rows shown in
- * pipeline hazards mode. Unlike every other control signal, Fwdop1/Fwdop2
- * aren't a fixed value per instruction kind: the forwarding unit computes
- * them each cycle for whichever instruction is in EX. So the rows show the
- * value only in that instruction's column (marked as read) and "--" in
- * every other column. */
-export interface ForwardingRowsData {
-  /** Mnemonic of the instruction in EX, or null if EX is empty. */
+/** One of the forwarding unit's per-cycle signals, shown as an extra row in
+ * pipeline hazards mode: Fwdop1/Fwdop2 (for the instruction in EX) and
+ * FwdRD1/FwdRD2 (for a branch in ID). Unlike every other control signal they
+ * aren't a fixed value per instruction kind, so a row shows its value only
+ * in the column of the instruction it applies to this cycle (marked as
+ * read), and "--" in every other column. */
+export interface ForwardingRow {
+  name: string;
+  /** Mnemonic of the instruction it applies to, or null if none. */
   op: string | null;
-  /** Two-bit strings, e.g. "10". */
-  fwdop1: string;
-  fwdop2: string;
-  /** Load-use hazard on that operand (forwarding.ts's loadUseA/loadUseB):
-   * the cell is marked as a warning. */
-  loadUse1: boolean;
-  loadUse2: boolean;
-  /** A one-line explanation under the rows — a load-use hazard being
-   * detected, a stall in progress, or an unresolved hazard — or null. */
+  /** Two-bit string, e.g. "10". */
+  value: string;
+  /** Marks the cell as a hazard (amber) instead of read (green). */
+  warn?: boolean;
+  /** Tooltip for the cell. */
+  title?: string;
+}
+
+export interface ForwardingRowsData {
+  rows: ForwardingRow[];
+  /** A one-line explanation under the rows — a hazard being detected, a
+   * stall or flush in progress, a forward to the branch comparator — or
+   * null. */
   note: { kind: "info" | "warning"; text: string } | null;
 }
 
 interface ControlTableProps {
   bank: CtrlBank;
-  /** Pipeline hazards mode only. Omit (undefined) to hide the Fwdop rows. */
+  /** Pipeline hazards mode only. Omit (undefined) to hide the extra rows. */
   forwarding?: ForwardingRowsData;
 }
 
@@ -55,8 +60,9 @@ export function ControlTable({ bank, forwarding }: ControlTableProps) {
         ))}
         {forwarding && (
           <>
-            <ForwardingRow name="Fwdop1" op={forwarding.op} value={forwarding.fwdop1} loadUse={forwarding.loadUse1} />
-            <ForwardingRow name="Fwdop2" op={forwarding.op} value={forwarding.fwdop2} loadUse={forwarding.loadUse2} />
+            {forwarding.rows.map((row) => (
+              <ForwardingRowView key={row.name} row={row} />
+            ))}
             {forwarding.note && (
               <tr className="ctrl-fwd-row">
                 <td className={`ctrl-name ctrl-fwd-note ctrl-fwd-note-${forwarding.note.kind}`} colSpan={KIND.length + 1}>
@@ -102,25 +108,15 @@ function ControlCell({ len, state }: ControlCellProps) {
   );
 }
 
-interface ForwardingRowProps {
-  name: string;
-  op: string | null;
-  value: string;
-  loadUse: boolean;
-}
-
-function ForwardingRow({ name, op, value, loadUse }: ForwardingRowProps) {
+function ForwardingRowView({ row }: { row: ForwardingRow }) {
+  const { name, op, value, warn, title } = row;
   const active = op !== null && (KIND as readonly string[]).includes(op);
-  const mark = loadUse ? "warning" : "success";
+  const mark = warn ? "warning" : "success";
   return (
     <tr className="ctrl-fwd-row">
       <td className={`ctrl-name mark-${active ? mark : "default"}`}>{name}</td>
       {KIND.map((k) => (
-        <td
-          key={k}
-          className={`ctrl-cell mark-${k === op ? mark : "default"}`}
-          title={k === op && loadUse ? "Load-use hazard: needs a one-cycle stall" : undefined}
-        >
+        <td key={k} className={`ctrl-cell mark-${k === op ? mark : "default"}`} title={k === op ? title : undefined}>
           <input type="text" value={k === op ? value : "--"} readOnly />
         </td>
       ))}

@@ -33,7 +33,7 @@
  */
 import { int32 } from "../Numbers/int32";
 import { ctrlValue, isKnownOp } from "./ctrl";
-import type { PipelineSlotView } from "./pipeline";
+import { isBranchOp, isJumpOp, type PipelineSlotView } from "./pipeline";
 
 export const FWD_NONE = 0b00;
 export const FWD_MEM_WB = 0b01;
@@ -103,10 +103,12 @@ function forwardFor(source: number, exMem: PipelineRegister | null, memWb: Pipel
 }
 
 /** Forwarding signals for this cycle, or null when no (error-free)
- * instruction is in EX. */
-export function computeForwarding(slots: PipelineSlotView[]): ForwardingSignals | null {
+ * instruction is in EX. With `earlyBranch`, branches and jumps finish in ID
+ * and pass through EX as no-ops, so none is computed for them. */
+export function computeForwarding(slots: PipelineSlotView[], earlyBranch = false): ForwardingSignals | null {
   const ex = slots.find((s) => s.stage === "A");
   if (!ex || ex.state.error) return null;
+  if (earlyBranch && (isBranchOp(ex.op) || isJumpOp(ex.op))) return null;
   const exMemSlot = slots.find((s) => s.stage === "M") ?? null;
   const memWbSlot = slots.find((s) => s.stage === "R") ?? null;
   const exMem = latched(exMemSlot);
@@ -123,6 +125,35 @@ export function computeForwarding(slots: PipelineSlotView[]): ForwardingSignals 
     loadUseA: a.loadUse,
     loadUseB: b.loadUse,
   };
+}
+
+// ---- Forwarding to the branch comparator in ID (early branches) ----------
+
+export interface BranchForwardingSignals {
+  /** The branch in ID. */
+  id: PipelineSlotView;
+  exMem: PipelineSlotView | null;
+  memWb: PipelineSlotView | null;
+  /** FwdRD1 / FwdRD2: select the comparator's rs / rt operand. */
+  fwdRd1: ForwardSelect;
+  fwdRd2: ForwardSelect;
+}
+
+/** The same conditions as for EX, applied to the branch in ID
+ * (IF/ID.RegisterRs / IF/ID.RegisterRt). The hazard detection unit has
+ * already stalled every case these can't cover (a producer still in EX, or
+ * a load in MEM), so a match in EX/MEM is always an ALU result. Null when ID
+ * doesn't hold a branch. */
+export function computeBranchForwarding(slots: PipelineSlotView[]): BranchForwardingSignals | null {
+  const id = slots.find((s) => s.stage === "D");
+  if (!id || id.state.error || !isBranchOp(id.op)) return null;
+  const exMemSlot = slots.find((s) => s.stage === "M") ?? null;
+  const memWbSlot = slots.find((s) => s.stage === "R") ?? null;
+  const exMem = latched(exMemSlot);
+  const memWb = latched(memWbSlot);
+  const a = forwardFor(int32.toNum(id.state.fields.rs), exMem, memWb);
+  const b = forwardFor(int32.toNum(id.state.fields.rt), exMem, memWb);
+  return { id, exMem: exMemSlot, memWb: memWbSlot, fwdRd1: a.sel, fwdRd2: b.sel };
 }
 
 /** "00" / "01" / "10", for the Control table. */

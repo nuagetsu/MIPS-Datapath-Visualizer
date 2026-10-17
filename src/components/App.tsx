@@ -36,8 +36,17 @@ import mipsUtil, { check, assemble } from "../lib/mips-parser/mips-util";
 import { int32 } from "../lib/Numbers/int32";
 import { CompileError } from "../lib/Numbers/err";
 import { isKnownOp } from "../lib/mips-machine/ctrl";
-import { computeForwarding, formatFwd, FWD_NONE, FWD_MEM_WB, type ForwardingSignals } from "../lib/mips-machine/forwarding";
-import { isLoadUseHazard, type PipelineSlotView } from "../lib/mips-machine/pipeline";
+import {
+  computeForwarding,
+  computeBranchForwarding,
+  formatFwd,
+  FWD_NONE,
+  FWD_EX_MEM,
+  FWD_MEM_WB,
+  type ForwardingSignals,
+  type BranchForwardingSignals,
+} from "../lib/mips-machine/forwarding";
+import { destReg, isBranchOp, isJumpOp, stallReason, type PipelineSlotView } from "../lib/mips-machine/pipeline";
 import { REGISTERS } from "../lib/mips-machine/registers";
 import type { ProgramLine } from "../lib/mips-machine/interpreter";
 import type { CycleStage } from "../lib/mips-machine/machineState";
@@ -74,44 +83,84 @@ function regName(num: number): string {
   return name ? `$${name}` : `$${num}`;
 }
 
-/** Pipeline hazards mode: a one-line explanation of the load-use hazard
- * handling going on this cycle, for under the Control table's Fwdop rows —
- * following one hazard from detection, through the stall, to the forward. */
+const FWD_SOURCE = { [FWD_EX_MEM]: "EX/MEM (10)", [FWD_MEM_WB]: "MEM/WB (01)" } as Record<number, string>;
+
+/** Pipeline hazards mode: a one-line explanation of the hazard handling
+ * going on this cycle, for under the Control table's forwarding rows —
+ * following each hazard from detection, through the stall or flush, to the
+ * forward. */
 function hazardNote(
   slots: PipelineSlotView[],
   bubbles: CycleStage[],
   fwd: ForwardingSignals | null,
+  brFwd: BranchForwardingSignals | null,
 ): ForwardingRowsData["note"] {
   const at = (stage: CycleStage) => slots.find((s) => s.stage === stage);
   const ex = at("A");
   const id = at("D");
+  const mem = at("M");
+  const info = (text: string) => ({ kind: "info" as const, text });
 
-  // 2. The stall cycle: the load has moved on to MEM; IF and ID are held.
+  // A taken branch or jump resolving in ID, flushing the wrong-path fetch.
+  const flushed = slots.find((s) => s.flushed);
+  if (flushed && id) {
+    const what = isJumpOp(id.op) ? `${id.op} is a jump, decoded in ID` : `${id.op} is taken: the comparator in ID found its condition true`;
+    return info(
+      `Misprediction: ${what}. ${flushed.op} was fetched because the pipeline predicts not taken, so it's flushed ` +
+        `(IF/ID is zeroed and a bubble enters ID) and MUX 4/5 send the target to PC instead.`,
+    );
+  }
+  // The stall cycle: IF and ID held.
   const heldInId = slots.find((s) => s.stalled && s.stage === "D");
   if (heldInId) {
-    const load = at("M")?.op ?? "the load";
-    return {
-      kind: "info",
-      text:
-        `Stall: ${heldInId.op} is held in ID (and the next instruction in IF) because PC and IF/ID aren't written ` +
-        `this cycle, and a bubble (nop) enters EX. ${load} is in MEM, reading the data ${heldInId.op} needs.`,
-    };
+    const head =
+      `Stall: ${heldInId.op} is held in ID (and the next instruction in IF) because PC and IF/ID aren't written ` +
+      `this cycle, and a bubble (nop) enters EX.`;
+    if (!isBranchOp(heldInId.op)) {
+      return info(`${head} ${mem?.op ?? "The load"} is in MEM, reading the data ${heldInId.op} needs.`);
+    }
+    const again = stallReason(heldInId.state, ex?.state, mem?.state) === "branch-mem";
+    return info(
+      again
+        ? `${head} ${mem?.op ?? "The load"} is now in MEM, but its data is only ready at the end of MEM, so the branch stalls once more.`
+        : `${head} Next cycle its operand can be forwarded to the comparator.`,
+    );
   }
-  // 3. The cycle after: the dependent instruction is in EX, the load in WB.
-  if (fwd && bubbles.includes("M") && (fwd.fwdA === FWD_MEM_WB || fwd.fwdB === FWD_MEM_WB)) {
-    return {
-      kind: "info",
-      text: `After the stall: ${fwd.memWb?.op ?? "the load"}'s loaded value is forwarded from MEM/WB to ${fwd.ex.op} (01).`,
-    };
-  }
-  // 1. Detection: a load in EX, an instruction using its target in ID.
-  if (ex && id && isLoadUseHazard(ex.state, id.state)) {
-    return {
-      kind: "info",
-      text:
+  // Detection: the hazard detection unit fires; next cycle stalls.
+  const reason = stallReason(id?.state, ex?.state, mem?.state);
+  if (id && reason) {
+    if (reason === "load-use" && ex) {
+      return info(
         `Hazard detection: ${ex.op} in EX loads ${regName(int32.toNum(ex.state.fields.rt))}, which ${id.op} in ID ` +
-        `uses. Its data won't exist until the end of MEM, so the pipeline stalls for one cycle next.`,
-    };
+          `uses. Its data won't exist until the end of MEM, so the pipeline stalls for one cycle next.`,
+      );
+    }
+    const producer = reason === "branch-ex" ? ex : mem;
+    const reg = regName(destReg(producer?.state) ?? 0);
+    const when =
+      reason === "branch-ex"
+        ? `${producer?.op} in EX is still computing ${reg}`
+        : `${producer?.op} in MEM is still loading ${reg}`;
+    return info(`Branch hazard: ${id.op} compares ${reg} in ID, but ${when}. The pipeline stalls for one cycle next.`);
+  }
+  // Forwarding to the branch comparator.
+  if (brFwd && (brFwd.fwdRd1 !== FWD_NONE || brFwd.fwdRd2 !== FWD_NONE)) {
+    const parts: string[] = [];
+    if (brFwd.fwdRd1 !== FWD_NONE) parts.push(`rs from ${FWD_SOURCE[brFwd.fwdRd1]}`);
+    if (brFwd.fwdRd2 !== FWD_NONE) parts.push(`rt from ${FWD_SOURCE[brFwd.fwdRd2]}`);
+    return info(`Forwarding to the comparator: ${brFwd.id.op} in ID takes ${parts.join(" and ")}.`);
+  }
+  // The cycle after a flush.
+  if (bubbles.includes("D") && !id) {
+    return info(`The flushed instruction is a bubble in ID; the branch target is in IF.`);
+  }
+  // A branch resolving not taken: the prediction was right.
+  if (id && isBranchOp(id.op) && !id.wires.includes("ADD2_MUX4")) {
+    return info(`${id.op} is not taken: the comparator in ID found its condition false, so the predicted instruction in IF carries on.`);
+  }
+  // The cycle after a load-use stall: the dependent instruction is in EX, the load in WB.
+  if (fwd && bubbles.includes("M") && (fwd.fwdA === FWD_MEM_WB || fwd.fwdB === FWD_MEM_WB)) {
+    return info(`After the stall: ${fwd.memWb?.op ?? "the load"}'s loaded value is forwarded from MEM/WB to ${fwd.ex.op} (01).`);
   }
   // Only reachable if hazards mode was switched on mid-run, after the stall
   // would already have happened.
@@ -188,12 +237,14 @@ export function App() {
   // Off by default so the single-cycle diagram stays the out-of-the-box
   // view.
   const [showPipeline, setShowPipeline] = useState(false);
-  // Pipeline hazards: draws the forwarding unit's hardware (MUX 6, MUX 7,
-  // the dotted EX/MEM and MEM/WB forwarding wires), adds Fwdop1/Fwdop2 to
-  // the Control table, and turns on the hazard detection unit, so load-use
-  // hazards stall the pipeline for a cycle. Toggling it doesn't restart the
-  // run: it only decides whether upcoming cycles may stall. Only offered in
-  // pipeline mode; the choice is remembered while pipeline mode is off.
+  // Pipeline hazards: draws the forwarding hardware (MUX 6/7 in EX, and the
+  // early-branch datapath: branches resolved in ID, FwdRD1/FwdRD2, MUX 4/5
+  // in IF), adds the forwarding signals to the Control table, and turns on
+  // the hazard detection unit and predict-not-taken fetching: load-use and
+  // branch hazards stall, taken branches and jumps flush. Toggling it
+  // doesn't restart the run: it only affects the cycles that follow. Only
+  // offered in pipeline mode; the choice is remembered while pipeline mode
+  // is off.
   const [showHazards, setShowHazards] = useState(false);
   const hazards = showPipeline && showHazards;
   const dispContainerRef = useRef<HTMLDivElement>(null);
@@ -213,19 +264,38 @@ export function App() {
   const valsBank = useValsBank();
   const machine = useMachineHistory(program, regBank, memBank, showPipeline, hazards);
 
-  // This cycle's Fwdop1/Fwdop2, from the instructions in EX, MEM and WB.
+  // This cycle's Fwdop1/Fwdop2 (for the instruction in EX) and
+  // FwdRD1/FwdRD2 (for a branch in ID), from the instructions in MEM and WB.
   const forwarding = useMemo(
-    () => (hazards ? computeForwarding(machine.pipelineSlots) : null),
+    () => (hazards ? computeForwarding(machine.pipelineSlots, true) : null),
     [hazards, machine.pipelineSlots],
   );
+  const branchForwarding = useMemo(
+    () => (hazards ? computeBranchForwarding(machine.pipelineSlots) : null),
+    [hazards, machine.pipelineSlots],
+  );
+  const loadUseTitle = "Load-use hazard: needs a one-cycle stall";
   const forwardingRows: ForwardingRowsData | undefined = hazards
     ? {
-        op: forwarding?.ex.op ?? null,
-        fwdop1: formatFwd(forwarding?.fwdA ?? FWD_NONE),
-        fwdop2: formatFwd(forwarding?.fwdB ?? FWD_NONE),
-        loadUse1: forwarding?.loadUseA ?? false,
-        loadUse2: forwarding?.loadUseB ?? false,
-        note: hazardNote(machine.pipelineSlots, machine.pipelineBubbles, forwarding),
+        rows: [
+          {
+            name: "Fwdop1",
+            op: forwarding?.ex.op ?? null,
+            value: formatFwd(forwarding?.fwdA ?? FWD_NONE),
+            warn: forwarding?.loadUseA,
+            title: forwarding?.loadUseA ? loadUseTitle : undefined,
+          },
+          {
+            name: "Fwdop2",
+            op: forwarding?.ex.op ?? null,
+            value: formatFwd(forwarding?.fwdB ?? FWD_NONE),
+            warn: forwarding?.loadUseB,
+            title: forwarding?.loadUseB ? loadUseTitle : undefined,
+          },
+          { name: "FwdRD1", op: branchForwarding?.id.op ?? null, value: formatFwd(branchForwarding?.fwdRd1 ?? FWD_NONE) },
+          { name: "FwdRD2", op: branchForwarding?.id.op ?? null, value: formatFwd(branchForwarding?.fwdRd2 ?? FWD_NONE) },
+        ],
+        note: hazardNote(machine.pipelineSlots, machine.pipelineBubbles, forwarding, branchForwarding),
       }
     : undefined;
 
@@ -396,7 +466,12 @@ export function App() {
                     style={slot ? { color: PIPELINE_WIRE_COLOURS[slot.seq % PIPELINE_WIRE_COLOURS.length] } : undefined}
                   >
                     {" "}
-                    {stage}:{slot ? `${slot.op}@${slot.pc}${slot.stalled ? "(stall)" : ""}` : bubble ? "bubble" : "-"}
+                    {stage}:
+                    {slot
+                      ? `${slot.op}@${slot.pc}${slot.stalled ? "(stall)" : ""}${slot.flushed ? "(flush)" : ""}`
+                      : bubble
+                        ? "bubble"
+                        : "-"}
                   </span>
                 );
               })}
@@ -478,8 +553,8 @@ export function App() {
                 aria-pressed={showHazards}
                 title={
                   showHazards
-                    ? "Hide the forwarding unit's muxes, wires and control signals"
-                    : "Show forwarding: MUX 6, the forwarding wires, and Fwdop1/Fwdop2"
+                    ? "Back to the ideal pipeline: no stalls, flushes or forwarding hardware"
+                    : "Show hazard handling: forwarding, stalls, early branches and predict-not-taken"
                 }
               >
                 Toggle Pipeline Hazards
@@ -493,6 +568,7 @@ export function App() {
               features={{ shift: showShift, jump: showJump, pipeline: showPipeline, hazards }}
               pipelineSlots={machine.pipelineSlots}
               forwarding={forwarding}
+              branchForwarding={branchForwarding}
               bubbles={machine.pipelineBubbles}
             />
           </div>

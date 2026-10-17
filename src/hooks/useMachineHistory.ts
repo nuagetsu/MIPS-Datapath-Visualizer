@@ -25,10 +25,11 @@
  * Switching modes mid-run isn't meaningful (a half-executed instruction
  * has no pipelined equivalent), so callers should reset() when toggling.
  *
- * `stallOnLoadUse` (pipeline mode only): the hazard detection unit — a
- * load-use hazard stalls the pipeline for a cycle (see pipeline.ts). It's
- * read on every step, so it can be toggled mid-run: it only decides whether
- * the *next* cycle may stall.
+ * `hazardUnit` (pipeline mode only): the hazard detection unit, early
+ * branches and predict-not-taken fetching — load-use and branch hazards
+ * stall, taken branches and jumps flush (see pipeline.ts). It's read on
+ * every step, so it can be toggled mid-run: it only affects the cycles that
+ * follow.
  *
  * NOTE on reset(): mirrors mips.js's RES() exactly — it clears this hook's
  * own bookkeeping (pc/stage/vals/history) but does NOT zero register or
@@ -73,7 +74,7 @@ export function useMachineHistory(
   regBank: RegisterBank,
   memBank: MemoryBank,
   pipeline = false,
-  stallOnLoadUse = false,
+  hazardUnit = false,
 ): MachineHistory {
   const pcRef = useRef(0); // pcRef is just the index for programLine array, not the byte addressing of the pc
   const stageIdxRef = useRef(0);
@@ -95,7 +96,7 @@ export function useMachineHistory(
         memSize: memBank.size,
       });
     }
-    const result: CycleResult | null = engineRef.current.step(stallOnLoadUse);
+    const result: CycleResult | null = engineRef.current.step(hazardUnit);
     if (!result) {
       haltedRef.current = true;
       return;
@@ -134,7 +135,7 @@ export function useMachineHistory(
     setPipelineBubbles(result.bubbles);
     setHistory((prev) => [...prev, { ...result.summary, error }]);
     if (error) haltedRef.current = true;
-  }, [program, regBank, memBank, stallOnLoadUse]);
+  }, [program, regBank, memBank, hazardUnit]);
 
   const stepSingle = useCallback((): void => {
     if (haltedRef.current || !canRun(program, pcRef.current)) {

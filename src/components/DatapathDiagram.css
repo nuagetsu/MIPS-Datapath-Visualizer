@@ -216,3 +216,16 @@
     animation: none;
   }
 }
+
+/* ---- Early branches (pipeline hazards mode) ---- */
+/* Junctions where the early-branch wiring taps an existing wire. */
+.dp-junction {
+  fill: black;
+}
+/* A taken branch or jump resolving in ID: IF/ID is zeroed at the end of the
+ * cycle (IF.Flush), flushing the wrong-path instruction in IF. */
+.dp-flushing {
+  fill: #f6c1bd;
+  stroke: #c0392b;
+  stroke-width: 2;
+}

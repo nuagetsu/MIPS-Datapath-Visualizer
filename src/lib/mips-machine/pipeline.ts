@@ -42,6 +42,24 @@
  * Like the slides' condition, this is conservative: it also stalls when the
  * matching rt is the ID instruction's destination rather than a source.
  *
+ * Early branches (also step(true)): branches compare their registers in ID,
+ * so a branch in ID whose rs or rt is still being produced stalls —
+ *   - one cycle for an instruction in EX that writes it (then its result is
+ *     forwarded from EX/MEM), and
+ *   - one more if that producer is a load, which only has its data at the
+ *     end of MEM (a load in MEM stalls the branch too; then the data is
+ *     forwarded from MEM/WB).
+ * See stallReason().
+ *
+ * Branch prediction (also step(true)): predict not taken. The instruction
+ * after a branch or jump is always fetched next. Branches and jumps resolve
+ * in ID, so if one turns out taken, the instruction it let into IF is on the
+ * wrong path: when the branch leaves ID it's flushed (IF/ID is zeroed, so a
+ * bubble enters ID) and the target is fetched instead — one cycle lost.
+ * The engine already knows each instruction's real next PC (precompute), so
+ * the wrong-path instruction is fetched as a "doomed" slot: only its Fetch
+ * stage, which reads and writes nothing, so it can't affect any state.
+ *
  * Pure: no React, no banks — reads come in through BaseReaders.
  */
 import { int32, type Int32Bits } from "../Numbers/int32";
@@ -82,9 +100,13 @@ export interface PipelineSlotView {
   state: MachineState;
   /** Every wire it lights across all five of its stages. */
   wires: WireId[];
-  /** True if it's held in IF or ID by a load-use stall this cycle (it's
-   * redoing the stage it was already in). */
+  /** True if it's held in IF or ID by a stall this cycle (it's redoing the
+   * stage it was already in). */
   stalled: boolean;
+  /** True if it's the wrong-path instruction in IF behind a taken branch or
+   * jump that resolves in ID this cycle: it'll be flushed at the end of the
+   * cycle. */
+  flushed: boolean;
 }
 
 export interface CycleEffects {
@@ -123,6 +145,44 @@ export function isLoadUseHazard(ex: MachineState, id: MachineState): boolean {
   if (ctrlValue("MemRead", ex.op) !== 1) return false;
   const loadRt = int32.toNum(ex.fields.rt);
   return loadRt === int32.toNum(id.fields.rs) || loadRt === int32.toNum(id.fields.rt);
+}
+
+/** Why the instruction in ID must stall this cycle, if it must:
+ *   - "branch-ex":  it's a branch, and the instruction in EX writes one of
+ *                   its registers (an ALU result one cycle away, or a load);
+ *   - "branch-mem": it's a branch, and the instruction in MEM is a load
+ *                   writing one of its registers;
+ *   - "load-use":   the slides' load-use condition (a load in EX).
+ * Arguments are each stage's MachineState, if occupied. */
+export type StallReason = "branch-ex" | "branch-mem" | "load-use";
+
+export function isBranchOp(op: string): boolean {
+  return isKnownOp(op) && ctrlValue("Branch", op) === 1;
+}
+
+export function isJumpOp(op: string): boolean {
+  return isKnownOp(op) && ctrlValue("Jump", op) === 1;
+}
+
+/** The register `s` will write, if it writes one (RegWrite, not $zero). */
+export function destReg(s: MachineState | undefined): number | null {
+  if (!s || s.error || !isKnownOp(s.op) || ctrlValue("RegWrite", s.op) !== 1) return null;
+  const wr = s.vals.REGWR ? int32.toNum(s.vals.REGWR) : 0;
+  return wr === 0 ? null : wr;
+}
+
+export function stallReason(id?: MachineState, ex?: MachineState, mem?: MachineState): StallReason | null {
+  if (!id || id.error) return null;
+  if (isBranchOp(id.op)) {
+    const srcs = [int32.toNum(id.fields.rs), int32.toNum(id.fields.rt)];
+    const exDest = destReg(ex);
+    if (exDest !== null && srcs.includes(exDest)) return "branch-ex";
+    const memDest = destReg(mem);
+    if (mem && memDest !== null && isKnownOp(mem.op) && ctrlValue("MemRead", mem.op) === 1 && srcs.includes(memDest)) return "branch-mem";
+    return null;
+  }
+  if (ex && isLoadUseHazard(ex, id)) return "load-use";
+  return null;
 }
 
 // ---- PendingState: committed state + in-flight writes -------------------
@@ -276,7 +336,17 @@ interface Slot extends Precomputed {
   seq: number;
   pc: number;
   stageIdx: number;
+  /** A wrong-path fetch behind a taken branch/jump: only ever in IF, and
+   * flushed when the branch leaves ID. */
+  doomed?: boolean;
 }
+
+/** Inputs for a doomed slot's Fetch stage, which never reads anything. */
+const NO_READS: MachineInputs = {
+  readReg: () => int32.num(0),
+  readWord: () => int32.num(0),
+  readByte: () => int32.num(0),
+};
 
 const ID_IDX = 1;
 const EX_IDX = 2;
@@ -310,6 +380,9 @@ export class PipelineEngine {
   /** Stage index of each bubble in flight. */
   private bubbles: number[] = [];
   private nextPc: number | null = 0;
+  /** Set after fetching a taken branch/jump with prediction on: the
+   * (wrong) not-taken successor to fetch next, as a doomed slot. */
+  private predictPc: number | null = null;
   private seq = 0;
   private halted = false;
   private pcParked = false;
@@ -325,14 +398,13 @@ export class PipelineEngine {
     return this.nextPc !== null && canRun(this.program, this.nextPc);
   }
 
-  /** The hazard detection unit, on the current (pre-step) pipeline: a load
-   * in EX that the instruction in ID depends on. */
-  private loadUseHazard(): boolean {
-    const ex = this.slots.find((s) => s.stageIdx === EX_IDX);
-    const id = this.slots.find((s) => s.stageIdx === ID_IDX);
-    const exState = ex?.states[EX_IDX];
-    const idState = id?.states[ID_IDX];
-    return !!exState && !!idState && isLoadUseHazard(exState, idState);
+  private stateAt(stageIdx: number): MachineState | undefined {
+    return this.slots.find((s) => s.stageIdx === stageIdx && !s.doomed)?.states[stageIdx];
+  }
+
+  /** The hazard detection unit, on the current pipeline (see stallReason). */
+  private hazard(): StallReason | null {
+    return stallReason(this.stateAt(ID_IDX), this.stateAt(EX_IDX), this.stateAt(EX_IDX + 1));
   }
 
   /** False once every instruction has left the pipeline and there's
@@ -341,33 +413,68 @@ export class PipelineEngine {
     return !this.halted && (this.slots.some((s) => s.stageIdx < STAGES.length - 1) || this.canFetch());
   }
 
-  /** Runs one clock cycle. With `stallOnLoadUse`, a load-use hazard
-   * detected this cycle makes it a stall cycle (see the header). */
-  step(stallOnLoadUse = false): CycleResult | null {
+  /** Runs one clock cycle. `hazardUnit` turns on the hazard detection unit
+   * (stalls), early branches and predict-not-taken fetching (see the
+   * header); off, the pipeline is ideal, as if every hazard were resolved
+   * for free. */
+  step(hazardUnit = false): CycleResult | null {
     if (!this.canStep()) return null;
     const effects: CycleEffects = { regReads: [], memReads: [], memWrites: [], regWrites: [], pc: null };
-    const stall = stallOnLoadUse && this.loadUseHazard();
+    const stall = hazardUnit && this.hazard() !== null;
+
+    // A taken branch or jump leaving ID flushes the wrong-path instruction
+    // behind it (whether or not prediction is still on: once fetched, a
+    // doomed slot has to go).
+    const doomed = this.slots.find((s) => s.doomed);
+    const flush = !stall && !!doomed;
+    if (flush) this.slots = this.slots.filter((s) => s !== doomed);
 
     // Everything in flight advances one stage; whatever just finished
     // write-back leaves. On a stall, IF and ID hold (PCWrite = IF/IDWrite =
     // 0) and a bubble takes the place of the instruction that would have
-    // entered EX.
+    // entered EX. On a flush, a bubble takes the flushed instruction's
+    // place in ID.
     const advances = (stageIdx: number) => !stall || stageIdx >= EX_IDX;
     this.slots = this.slots
       .map((s) => (advances(s.stageIdx) ? { ...s, stageIdx: s.stageIdx + 1 } : s))
       .filter((s) => s.stageIdx < STAGES.length);
     this.bubbles = this.bubbles.map((b) => b + 1).filter((b) => b < STAGES.length);
     if (stall) this.bubbles.push(EX_IDX);
+    if (flush) this.bubbles.push(ID_IDX);
 
     // The next instruction enters Fetch (not on a stall: IF is still busy).
     if (stall) {
       // PC holds.
+    } else if (this.predictPc !== null) {
+      // Predicted not taken: fetch the next instruction in sequence, which
+      // is the wrong one. Only its Fetch stage is computed.
+      const pc = this.predictPc;
+      this.predictPc = null;
+      if (canRun(this.program, pc)) {
+        const state = execStage(this.program, pc, "F", {}, int32.num(pc * 4), NO_READS);
+        this.slots.push({
+          seq: this.seq++,
+          pc,
+          stageIdx: 0,
+          states: [state],
+          reads: [[]],
+          wires: [...state.activeWires],
+          nextPc: null,
+          doomed: true,
+        });
+        effects.pc = int32.num(pc * 4);
+      }
     } else if (this.canFetch()) {
       const pc = this.nextPc as number;
       const pre = precompute(this.program, pc, this.pending);
       this.slots.push({ seq: this.seq++, pc, stageIdx: 0, ...pre });
       this.nextPc = pre.nextPc;
       effects.pc = int32.num(pc * 4);
+      // A taken branch or jump: the not-taken prediction will be wrong.
+      const op = pre.states[0]?.op ?? "";
+      if (hazardUnit && pre.nextPc !== null && pre.nextPc !== pc + 1 && (isBranchOp(op) || isJumpOp(op))) {
+        this.predictPc = pc + 1;
+      }
     } else if (this.nextPc !== null && !this.pcParked) {
       // Ran off the end: $pc shows where fetching stopped, as the single-
       // cycle mode leaves it after the last instruction.
@@ -400,6 +507,9 @@ export class PipelineEngine {
     }
     if (error) this.halted = true;
 
+    // A doomed slot is flushed at the end of this cycle unless the branch
+    // in front of it stalls again.
+    const flushNext = !(hazardUnit && this.hazard() !== null);
     const views: PipelineSlotView[] = this.slots.map((s) => ({
       seq: s.seq,
       pc: s.pc,
@@ -408,6 +518,7 @@ export class PipelineEngine {
       state: s.states[s.stageIdx],
       wires: s.wires,
       stalled: stall && s.stageIdx < EX_IDX,
+      flushed: !!s.doomed && flushNext,
     }));
     const oldest = this.slots.reduce((a, b) => (b.stageIdx > a.stageIdx ? b : a));
     const focus = errorSlot ?? oldest;

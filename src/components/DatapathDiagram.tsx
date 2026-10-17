@@ -95,7 +95,49 @@ import {
   FWD_MEMWB_TAP,
 } from "../lib/mips-machine/datapathHazards";
 import { ctrlValue, isKnownOp } from "../lib/mips-machine/ctrl";
-import { FWD_EX_MEM, FWD_MEM_WB, type ForwardingSignals } from "../lib/mips-machine/forwarding";
+import {
+  hazardX,
+  hazardDx,
+  remapPath,
+  HAZARD_VIEW_WIDTH,
+  HAZARD_BAR_TOP,
+  HAZARD_DROPPED_CONTROL_WIRES,
+  HAZARD_CONTROL_WIRE_REPLACEMENTS,
+  BR_MUX4,
+  BR_MUX5,
+  BR_JUMP_LABEL,
+  BR_JUMP_LS,
+  BR_JADDR_LABEL,
+  BR_LS,
+  BR_ADD,
+  BR_FWDRD1,
+  BR_FWDRD2,
+  BR_FWDRD1_LABEL,
+  BR_FWDRD2_LABEL,
+  BR_CMP,
+  BR_PC4_TO_MUX4,
+  BR_PC4_LATCH_IF,
+  BR_PC4_LATCH_ID,
+  BR_MUX4_TO_MUX5,
+  BR_MUX4_TO_PC,
+  BR_MUX5_TO_PC,
+  BR_JADDR_TO_LS,
+  BR_LS_TO_MUX5,
+  BR_IMM_RISER,
+  BR_LS_TO_ADD,
+  BR_TARGET,
+  BR_CMP_TO_MUX4,
+  BR_RD1_TO_FWD,
+  BR_RD2_TO_FWD,
+  BR_FWD1_TO_CMP,
+  BR_FWD2_TO_CMP,
+  BR_TAPS,
+  BR_FWD_EXMEM,
+  BR_FWD_MEMWB,
+  BR_FWD_MEMWB_TAP,
+} from "../lib/mips-machine/datapathBranch";
+import { isBranchOp, isJumpOp } from "../lib/mips-machine/pipeline";
+import { FWD_EX_MEM, FWD_MEM_WB, FWD_NONE, type ForwardingSignals, type BranchForwardingSignals } from "../lib/mips-machine/forwarding";
 import type { PipelineSlotView } from "../lib/mips-machine/pipeline";
 import type { CycleStage, MachineState } from "../lib/mips-machine/machineState";
 import "./DatapathDiagram.css";
@@ -114,10 +156,12 @@ export interface DatapathFeatures {
    * spreading the stages apart to make room (see the "Pipelined layout"
    * section of datapathWires.ts). Defaults to false. */
   pipeline?: boolean;
-  /** Pipeline mode only: draw the forwarding hardware — MUX 6 before
-   * ALUop1, MUX 7 on the rt line (feeding MUX 2 and the store data), and
-   * the dotted EX/MEM and MEM/WB forwarding wires (see datapathHazards.ts).
-   * Ignored when `pipeline` is off. Defaults to false. */
+  /** Pipeline mode only: draw the hazard hardware — in EX, MUX 6 before
+   * ALUop1, MUX 7 on the rt line (feeding MUX 2 and the store data) and
+   * the dotted EX/MEM and MEM/WB forwarding wires (datapathHazards.ts); and
+   * the early-branch datapath, with branches resolved in ID and MUX 4/5 in
+   * IF (datapathBranch.ts, which also re-lays out the whole diagram to make
+   * room). Ignored when `pipeline` is off. Defaults to false. */
   hazards?: boolean;
 }
 
@@ -144,13 +188,18 @@ export interface DatapathDiagramProps {
   /** Pipeline mode only: stages holding a stall's bubble this cycle
    * (useMachineHistory's pipelineBubbles), each labelled "(bubble)". */
   bubbles?: CycleStage[];
+  /** Hazards mode only: this cycle's FwdRD1/FwdRD2 for a branch in ID
+   * (forwarding.ts's computeBranchForwarding), or null. */
+  branchForwarding?: BranchForwardingSignals | null;
 }
 
 /** Where to label a bubble, per stage, in pipelined coordinates: inside the
- * ALU under its name, inside Data Memory between its Address and Read Data
- * labels, and above MUX 3. A bubble in IF or ID can't happen (a stall
- * holds those stages instead). */
+ * Register File under its title (a flushed instruction), inside the ALU
+ * under its name, inside Data Memory between its Address and Read Data
+ * labels, and above MUX 3. A bubble in IF can't happen (a stall holds IF
+ * instead). */
 const BUBBLE_LABEL_AT: Partial<Record<CycleStage, { x: number; y: number }>> = {
+  D: { x: 200 + PIPELINE_OFFSET.ID + 50, y: 237 },
   A: { x: 450 + PIPELINE_OFFSET.EX + 50, y: 340 },
   M: { x: 650 + PIPELINE_OFFSET.MEM + 50, y: 400 },
   R: { x: 795 + PIPELINE_OFFSET.WB, y: 410 },
@@ -258,8 +307,19 @@ const flowVars = (delay: number, duration = 0) => ({ "--d": flowTime(delay), "--
  * Every line is drawn over a white casing, so where it crosses a black
  * data wire it reads as passing over it without needing a hop.
  */
-function ControlUnit() {
-  const oval = PIPELINE_CONTROL_OVAL;
+function ControlUnit({ hazards }: { hazards: boolean }) {
+  // Hazards mode: everything goes through the early-branch remap, and the
+  // lines to the old Branch/Jump/isZero labels after EX/MEM are dropped or
+  // trimmed (see HAZARD_DROPPED_CONTROL_WIRES).
+  const X = hazards ? hazardX : (x: number) => x;
+  const P = hazards ? remapPath : (d: string) => d;
+  const oval = { ...PIPELINE_CONTROL_OVAL, cx: X(PIPELINE_CONTROL_OVAL.cx) };
+  const wires = hazards
+    ? PIPELINE_CONTROL_WIRES.filter((w) => !HAZARD_DROPPED_CONTROL_WIRES.has(w.key)).map((w) => ({
+        ...w,
+        ...(HAZARD_CONTROL_WIRE_REPLACEMENTS[w.key] ?? {}),
+      }))
+    : PIPELINE_CONTROL_WIRES;
   return (
     <g className="dp-control" tabIndex={0} aria-label="Control unit: hover or focus to show its control signals">
       <ellipse cx={oval.cx} cy={oval.cy} rx={oval.rx} ry={oval.ry} className="dp-box dp-control-oval" />
@@ -267,19 +327,22 @@ function ControlUnit() {
         spec={{ text: "Control", x: oval.cx - oval.rx, y: oval.cy - oval.ry, width: 2 * oval.rx, height: 2 * oval.ry, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" }}
       />
       <g className="dp-ctrl-overlay" aria-hidden="true">
-        {PIPELINE_CONTROL_WIRES.map((w) => (
-          <path key={`${w.key}-halo`} d={w.d} pathLength={1} className="dp-ctrl-draw dp-ctrl-halo" style={flowVars(w.start, w.length)} />
+        {wires.map((w) => (
+          <path key={`${w.key}-halo`} d={P(w.d)} pathLength={1} className="dp-ctrl-draw dp-ctrl-halo" style={flowVars(w.start, w.length)} />
         ))}
-        {PIPELINE_CONTROL_WIRES.map((w) => (
-          <path key={w.key} d={w.d} pathLength={1} className="dp-ctrl-draw dp-ctrl-wire" style={flowVars(w.start, w.length)} />
+        {wires.map((w) => (
+          <path key={w.key} d={P(w.d)} pathLength={1} className="dp-ctrl-draw dp-ctrl-wire" style={flowVars(w.start, w.length)} />
         ))}
-        {PIPELINE_CONTROL_WIRES.map((w) => (
-          <path key={`${w.key}-arrow`} d={w.arrowD} className="dp-ctrl-pop dp-ctrl-arrowhead" style={flowVars(w.start + w.length)} />
-        ))}
+        {wires.map(
+          (w) =>
+            w.arrowD && (
+              <path key={`${w.key}-arrow`} d={P(w.arrowD)} className="dp-ctrl-pop dp-ctrl-arrowhead" style={flowVars(w.start + w.length)} />
+            ),
+        )}
         {PIPELINE_CONTROL_CELLS.map((c) => (
           <g key={`${c.x}-${c.label}`} className="dp-ctrl-pop" style={flowVars(c.at)}>
-            <rect x={c.x} y={c.y} width={c.width} height={c.height} className="dp-ctrl-cell" />
-            <KonvaLabel spec={{ text: c.label, x: c.x, y: c.y, width: c.width, height: c.height, align: "center", vAlign: "middle", bold: true, fontSize: 11, fill: "#2c5aa0" }} />
+            <rect x={X(c.x)} y={c.y} width={c.width} height={c.height} className="dp-ctrl-cell" />
+            <KonvaLabel spec={{ text: c.label, x: X(c.x), y: c.y, width: c.width, height: c.height, align: "center", vAlign: "middle", bold: true, fontSize: 11, fill: "#2c5aa0" }} />
           </g>
         ))}
       </g>
@@ -287,18 +350,27 @@ function ControlUnit() {
   );
 }
 
-export function DatapathDiagram({ activeWires, state, features, pipelineSlots, forwarding, bubbles }: DatapathDiagramProps) {
+export function DatapathDiagram({ activeWires, state, features, pipelineSlots, forwarding, bubbles, branchForwarding }: DatapathDiagramProps) {
   const shift = features?.shift ?? true;
   const jump = features?.jump ?? true;
   const pipeline = features?.pipeline ?? false;
   // Forwarding hardware only exists in the pipelined drawing.
   const hazards = pipeline && (features?.hazards ?? false);
   const fwd = hazards ? (forwarding ?? null) : null;
+  const brFwd = hazards ? (branchForwarding ?? null) : null;
+
+  // Hazards mode re-lays out the pipelined diagram for the early-branch
+  // hardware (datapathBranch.ts): X/P remap x coordinates and paths, and
+  // hzShift moves a component group anchored at pipelined x. All three are
+  // the identity otherwise.
+  const X = (x: number) => (hazards ? hazardX(x) : x);
+  const P = (d: string) => (hazards ? remapPath(d) : d);
+  const hzShift = (anchorX: number) => (hazards ? `translate(${hazardDx(anchorX)} 0)` : undefined);
 
   // Per-stage horizontal shift for component groups. All zero when
   // pipelining is off, so the single-cycle layout is exactly as before.
   const stageShift = (stage: Stage) => (pipeline ? `translate(${PIPELINE_OFFSET[stage]} 0)` : undefined);
-  const viewWidth = pipeline ? PIPELINE_VIEW_WIDTH : 900;
+  const viewWidth = hazards ? HAZARD_VIEW_WIDTH : pipeline ? PIPELINE_VIEW_WIDTH : 900;
   const viewHeight = pipeline ? PIPELINE_VIEW_HEIGHT : 620;
   const regDstMux = PIPELINE_REGDST_MUX;
   // MUX 4 / MUX 5 move left to just after EX/MEM in pipeline mode.
@@ -349,6 +421,9 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   if (pipeline) {
     for (const slot of pipelineSlots ?? []) {
       const region = REGION_OF_STEP[slot.stage];
+      // Early branches: a branch or jump is finished once it leaves ID, and
+      // passes through EX, MEM and WB as a no-op.
+      if (hazards && (isBranchOp(slot.op) || isJumpOp(slot.op)) && region !== "IF" && region !== "ID") continue;
       // A forwarded operand doesn't come along its usual route from ID/EX,
       // so that route stays dark and the dotted wire lights instead. For rt
       // that's both of RD2's uses (ALU and store data): they share the run
@@ -424,6 +499,14 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   // whose output feeds MUX 2 and the store data line; the immediate runs
   // to MUX 2's new position.
   if (hazards) ["_ALU1", "_RD2", "_2MUX2", "MWD_", "_MWD_", "_MWD", "_1MUX2"].forEach((k) => hiddenSegments.add(k));
+  // ...and the PC-update wiring is replaced by the early-branch version:
+  // PC+4 no longer travels past ID, the branch adder and shifter move to ID,
+  // and MUX 4/5 move to IF.
+  if (hazards) {
+    ["ADD1_", "_MUX4", "_ADD2", "LS_ADD2", "ADD2_MUX4", "MUX4_MUX5", "MUX5_PC", "MUX4_PC", "JADDR_LS", "LS_MUX5", "_LS"].forEach((k) =>
+      hiddenSegments.add(k),
+    );
+  }
   // Pipeline mode's MEM/WB -> WR wire (see PIPELINE_WB_WR in
   // datapathWires.ts) lights during write-back, alongside WD.
   const wbLit = regionLit.get("WB");
@@ -475,6 +558,57 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
     <KonvaLabel spec={{ ...box, text, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" }} />
   );
 
+  // ---- Early-branch lighting (hazards mode) ----
+  const slotAt = (stage: CycleStage) => (hazards ? pipelineSlots?.find((s) => s.stage === stage) : undefined);
+  const colourOf = (s: PipelineSlotView | null | undefined) => (s ? s.seq % PIPELINE_WIRE_COLOURS.length : null);
+  const ifSlot = slotAt("F");
+  const idSlot = slotAt("D");
+  const idBranch = idSlot && isBranchOp(idSlot.op) ? idSlot : undefined;
+  const idJump = idSlot && isJumpOp(idSlot.op) ? idSlot : undefined;
+  const branchTaken = !!idBranch && idBranch.wires.includes("ADD2_MUX4");
+  // Where this cycle's new PC comes from: the jump or taken branch in ID,
+  // else PC+4 of the instruction in IF (predict not taken). A stall writes
+  // no PC.
+  const pcSource: "jump" | "branch" | "seq" | null =
+    !hazards || held ? null : idJump ? "jump" : branchTaken ? "branch" : ifSlot ? "seq" : null;
+  const pcColour = colourOf(pcSource === "jump" ? idJump : pcSource === "branch" ? idBranch : pcSource === "seq" ? ifSlot : null);
+  const branchColour = colourOf(idBranch);
+  const fwdRd1 = brFwd?.fwdRd1 ?? FWD_NONE;
+  const fwdRd2 = brFwd?.fwdRd2 ?? FWD_NONE;
+  const branchWires: { key: string; seg: WireSegment; colour: number | null }[] = hazards
+    ? [
+        { key: "pc4-mux4", seg: BR_PC4_TO_MUX4, colour: pcSource === "seq" ? pcColour : null },
+        { key: "pc4-latch-if", seg: BR_PC4_LATCH_IF, colour: colourOf(ifSlot) },
+        { key: "pc4-latch-id", seg: BR_PC4_LATCH_ID, colour: branchColour },
+        ...(jump
+          ? [
+              { key: "mux4-mux5", seg: BR_MUX4_TO_MUX5, colour: pcSource === "seq" || pcSource === "branch" ? pcColour : null },
+              { key: "mux5-pc", seg: BR_MUX5_TO_PC, colour: pcColour },
+              { key: "jaddr-ls", seg: BR_JADDR_TO_LS, colour: colourOf(idJump) },
+              { key: "ls-mux5", seg: BR_LS_TO_MUX5, colour: colourOf(idJump) },
+            ]
+          : [{ key: "mux4-pc", seg: BR_MUX4_TO_PC, colour: pcSource === "seq" || pcSource === "branch" ? pcColour : null }]),
+        { key: "imm-riser", seg: BR_IMM_RISER, colour: branchColour },
+        { key: "ls-add", seg: BR_LS_TO_ADD, colour: branchColour },
+        { key: "target", seg: BR_TARGET, colour: branchColour },
+        { key: "cmp-mux4", seg: BR_CMP_TO_MUX4, colour: branchColour },
+        { key: "rd1-fwd", seg: BR_RD1_TO_FWD, colour: fwdRd1 === FWD_NONE ? branchColour : null },
+        { key: "rd2-fwd", seg: BR_RD2_TO_FWD, colour: fwdRd2 === FWD_NONE ? branchColour : null },
+        { key: "fwd1-cmp", seg: BR_FWD1_TO_CMP, colour: branchColour },
+        { key: "fwd2-cmp", seg: BR_FWD2_TO_CMP, colour: branchColour },
+      ]
+    : [];
+  // The dotted forwarding wires into FwdRD1/FwdRD2, in the producer's
+  // colour (as in EX).
+  const idForwardPaths = [
+    { key: "id-exmem", wire: BR_FWD_EXMEM, colour: colourOf(brFwd?.exMem), sel: FWD_EX_MEM },
+    { key: "id-memwb", wire: BR_FWD_MEMWB, colour: colourOf(brFwd?.memWb), sel: FWD_MEM_WB },
+  ];
+  // The EX/MEM forwarding trunk out of the ALU result also feeds the ID
+  // continuation, so it lights for either.
+  const idUsesExMem = fwdRd1 === FWD_EX_MEM || fwdRd2 === FWD_EX_MEM;
+  const exMemTrunkColour = exMemColour ?? colourOf(brFwd?.exMem);
+
   return (
     <svg className="datapath-diagram" viewBox={`0 ${viewY} ${viewWidth} ${viewHeight}`} xmlns="http://www.w3.org/2000/svg">
       <defs>
@@ -505,11 +639,26 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
           {forwardPaths.map(({ key, wire, colour, sel }) => {
             const toMux6 = fwdA === sel;
             const toMux7 = fwdB === sel;
+            const toId = sel === FWD_EX_MEM && idUsesExMem;
             return (
               <g key={key}>
-                <path d={wire.trunk.d} {...fwdWireProps(colour, toMux6 || toMux7, false)} />
-                <path d={wire.toMux6.d} {...fwdWireProps(colour, toMux6, true)} />
-                <path d={wire.toMux7.d} {...fwdWireProps(colour, toMux7, true)} />
+                <path
+                  d={P(wire.trunk.d)}
+                  {...fwdWireProps(toId && !(toMux6 || toMux7) ? exMemTrunkColour : colour, toMux6 || toMux7 || toId, false)}
+                />
+                <path d={P(wire.toMux6.d)} {...fwdWireProps(colour, toMux6, true)} />
+                <path d={P(wire.toMux7.d)} {...fwdWireProps(colour, toMux7, true)} />
+              </g>
+            );
+          })}
+          {idForwardPaths.map(({ key, wire, colour, sel }) => {
+            const toRd1 = fwdRd1 === sel;
+            const toRd2 = fwdRd2 === sel;
+            return (
+              <g key={key}>
+                <path d={wire.trunk.d} {...fwdWireProps(colour, toRd1 || toRd2, false)} />
+                <path d={wire.toRd1.d} {...fwdWireProps(colour, toRd1, true)} />
+                <path d={wire.toRd2.d} {...fwdWireProps(colour, toRd2, true)} />
               </g>
             );
           })}
@@ -526,15 +675,19 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
             // coloured by whichever instruction is in that region.
             const pieces = pipeline ? pipelineSegment(key, seg) : [seg];
             return pieces.map((piece, i) => (
-              <path key={`${key}-${i}`} d={piece.d} {...wireProps(pieceColour(key, piece), piece.arrow)} />
+              <path key={`${key}-${i}`} d={P(piece.d)} {...wireProps(pieceColour(key, piece), piece.arrow)} />
             ));
           })}
         {pipeline &&
           PIPELINE_WB_WR.map((piece, i) => (
-            <path key={`WB_WR-${i}`} d={piece.d} {...wireProps(wbWrColour, piece.arrow)} />
+            <path key={`WB_WR-${i}`} d={P(piece.d)} {...wireProps(wbWrColour, piece.arrow)} />
           ))}
-        {pipeline && <path d={PIPELINE_CONTROL_INPUT.d} {...wireProps(controlInColour, true)} />}
+        {pipeline && <path d={P(PIPELINE_CONTROL_INPUT.d)} {...wireProps(controlInColour, true)} />}
         {hazardWires.map(({ key, seg, colour }) => (
+          <path key={key} d={P(seg.d)} {...wireProps(colour, seg.arrow)} />
+        ))}
+        {/* Early-branch wiring: already in final coordinates. */}
+        {branchWires.map(({ key, seg, colour }) => (
           <path key={key} d={seg.d} {...wireProps(colour, seg.arrow)} />
         ))}
       </g>
@@ -542,18 +695,34 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       {/* Where the forwarding wires tap their source wires. */}
       {hazards &&
         forwardPaths.map(({ key, colour, sel, tap }) => {
-          const on = (fwdA === sel || fwdB === sel) && colour !== null;
+          const on = (fwdA === sel || fwdB === sel || (sel === FWD_EX_MEM && idUsesExMem)) && (colour ?? exMemTrunkColour) !== null;
+          const c = colour ?? exMemTrunkColour;
           return (
             <circle
               key={`${key}-tap`}
-              cx={tap.x}
+              cx={X(tap.x)}
               cy={tap.y}
               r={3}
               className="dp-fwd-tap"
-              style={on ? { fill: PIPELINE_WIRE_COLOURS[colour] } : undefined}
+              style={on && c !== null ? { fill: PIPELINE_WIRE_COLOURS[c] } : undefined}
             />
           );
         })}
+      {hazards && (
+        <circle
+          cx={BR_FWD_MEMWB_TAP.x}
+          cy={BR_FWD_MEMWB_TAP.y}
+          r={3}
+          className="dp-fwd-tap"
+          style={
+            (fwdRd1 === FWD_MEM_WB || fwdRd2 === FWD_MEM_WB) && brFwd?.memWb
+              ? { fill: PIPELINE_WIRE_COLOURS[brFwd.memWb.seq % PIPELINE_WIRE_COLOURS.length] }
+              : undefined
+          }
+        />
+      )}
+      {/* Junctions on the early-branch wiring's source wires. */}
+      {hazards && BR_TAPS.map(([x, y]) => <circle key={`br-tap-${x}-${y}`} cx={x} cy={y} r={2.5} className="dp-junction" />)}
 
       {/* ---- Pipeline registers ---- */}
       {/* Drawn after the wires so each bar sits on top of them; the wires
@@ -561,22 +730,36 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       every wire visibly ends in an arrow into a bar and restarts out of it. */}
       {pipeline && (
         <g className="dp-pipeline-bars">
-          {PIPELINE_BARS.map((b) => (
-            <g key={b.label}>
-              <rect
-                x={b.x}
-                y={b.top}
-                width={b.width}
-                height={b.bottom - b.top}
-                className={held && b.label === "IF/ID" ? "dp-box dp-pipeline-bar dp-held" : "dp-box dp-pipeline-bar"}
-              >
-                {held && b.label === "IF/ID" && <title>Stalled: IF/ID keeps its contents this cycle (IF/IDWrite = 0)</title>}
-              </rect>
-              <KonvaLabel
-                spec={{ text: b.label, x: b.x - 30, y: b.top - 17, width: b.width + 60, height: 14, align: "center", bold: true, fontSize: 11 }}
-              />
-            </g>
-          ))}
+          {PIPELINE_BARS.map((bar) => {
+            // Hazards mode: remapped, and (except MEM/WB, which already
+            // starts lower) starting lower to leave the lanes back to MUX 4
+            // room above.
+            const b = { ...bar, x: X(bar.x), top: hazards && bar.label !== "MEM/WB" ? HAZARD_BAR_TOP : bar.top };
+            const flushing = hazards && b.label === "IF/ID" && (pipelineSlots ?? []).some((s) => s.flushed);
+            return (
+              <g key={b.label}>
+                <rect
+                  x={b.x}
+                  y={b.top}
+                  width={b.width}
+                  height={b.bottom - b.top}
+                  className={
+                    held && b.label === "IF/ID"
+                      ? "dp-box dp-pipeline-bar dp-held"
+                      : flushing
+                        ? "dp-box dp-pipeline-bar dp-flushing"
+                        : "dp-box dp-pipeline-bar"
+                  }
+                >
+                  {held && b.label === "IF/ID" && <title>Stalled: IF/ID keeps its contents this cycle (IF/IDWrite = 0)</title>}
+                  {flushing && <title>Flush: IF/ID is zeroed at the end of this cycle (IF.Flush = 1)</title>}
+                </rect>
+                <KonvaLabel
+                  spec={{ text: b.label, x: b.x - 30, y: b.top - 17, width: b.width + 60, height: 14, align: "center", bold: true, fontSize: 11 }}
+                />
+              </g>
+            );
+          })}
         </g>
       )}
 
@@ -618,6 +801,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       </g>
 
       {/* ---- Instruction fields — rotated boxes, see header comment ---- */}
+      <g transform={hzShift(60 + PIPELINE_OFFSET.ID)}>
       <g className="dp-inst-fields" transform={stageShift("ID")}>
         {fieldRows.map((f) => (
           <g key={f.name}>
@@ -640,8 +824,12 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
           </g>
         ))}
       </g>
+      </g>
 
       {/* ---- Register File ---- */}
+      {/* Hazards mode: Register File, Sign Extend and Control move left
+      (datapathBranch.ts). */}
+      <g transform={hzShift(200 + PIPELINE_OFFSET.ID)}>
       <g transform={stageShift("ID")}>
         <rect x={200} y={200} width={100} height={230} className="dp-box" fill="#ffffcc" />
         <KonvaLabels
@@ -658,15 +846,19 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
         />
         <CtrlTick x={250} y1={430} y2={440} />
       </g>
+      </g>
 
       {/* ---- Sign Extend ---- */}
       {/* Ellipse x/y is its CENTER (see header comment) — was cx=300 cy=515 before, wrong. */}
+      <g transform={hzShift(200 + PIPELINE_OFFSET.ID)}>
       <g transform={stageShift("ID")}>
         <ellipse cx={250} cy={500} rx={50} ry={15} className="dp-box" fill="#f2f2f2" />
         <KonvaLabel spec={{ text: "Sign Extend", x: 205, y: 485, width: 90, height: 30, align: "center", vAlign: "middle", bold: true }} />
       </g>
+      </g>
 
       {/* ---- ALU ---- */}
+      <g transform={hzShift(450 + PIPELINE_OFFSET.EX)}>
       <g transform={stageShift("EX")}>
         <path d={aluPath(450, 200, 100, 230)} className="dp-box" fill="white" />
         <KonvaLabels
@@ -690,8 +882,10 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
         "Shift" feature toggle is off. */}
         {shift && <KonvaLabel spec={{ text: "shamt", x: 490, y: 435, width: 30, height: 20, align: "right", vAlign: "middle" }} />}
       </g>
+      </g>
 
       {/* ---- Data Memory ---- */}
+      <g transform={hzShift(650 + PIPELINE_OFFSET.MEM)}>
       <g transform={stageShift("MEM")}>
         <rect x={650} y={300} width={100} height={200} className="dp-box" fill="#e1ffc4" />
         <KonvaLabels
@@ -707,16 +901,19 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
         <CtrlTick x={700} y1={280} y2={300} />
         <CtrlTick x={700} y1={500} y2={510} />
       </g>
+      </g>
 
       {/* ---- Left Shift 2-bit ---- */}
       {/* Ellipse x/y is its CENTER — was cx=375 cy=140 before, wrong. */}
       {/* Pipeline mode: moved into EX, after ID/EX — see PIPELINE_BRANCH_LS in
       datapathWires.ts. Same ellipse, just translated from its original
-      center (325, 115). */}
-      <g transform={pipeline ? `translate(${PIPELINE_BRANCH_LS.cx - 325} ${PIPELINE_BRANCH_LS.cy - 115 + PIPELINE_TOP_DY})` : undefined}>
-        <ellipse cx={325} cy={115} rx={50} ry={25} className="dp-box" fill="#f2f2f2" />
-        <KonvaLabel spec={{ text: "Left Shift\n2-bit", x: 275, y: 90, width: 100, height: 50, align: "center", vAlign: "middle", bold: true }} />
-      </g>
+      center (325, 115). Hazards mode draws its own, in ID. */}
+      {!hazards && (
+        <g transform={pipeline ? `translate(${PIPELINE_BRANCH_LS.cx - 325} ${PIPELINE_BRANCH_LS.cy - 115 + PIPELINE_TOP_DY})` : undefined}>
+          <ellipse cx={325} cy={115} rx={50} ry={25} className="dp-box" fill="#f2f2f2" />
+          <KonvaLabel spec={{ text: "Left Shift\n2-bit", x: 275, y: 90, width: 100, height: 50, align: "center", vAlign: "middle", bold: true }} />
+        </g>
+      )}
 
       {/* ---- Add1 (PC+4) ---- */}
       {/* Shifted 30 units right of its original x=220 so its left edge
@@ -739,10 +936,13 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       </g>
 
       {/* ---- Add2 (branch target) ---- */}
-      <g transform={pipeline ? `translate(${PIPELINE_OFFSET.EX} ${PIPELINE_TOP_DY})` : undefined}>
-        <path d={aluPath(500, 65, 40, 60)} className="dp-box" fill="white" />
-        <KonvaLabel spec={{ text: "Add", x: 505, y: 65, width: 40, height: 60, align: "center", vAlign: "middle", bold: true, fill: "#c0392b" }} />
-      </g>
+      {/* Hazards mode draws its own, in ID. */}
+      {!hazards && (
+        <g transform={pipeline ? `translate(${PIPELINE_OFFSET.EX} ${PIPELINE_TOP_DY})` : undefined}>
+          <path d={aluPath(500, 65, 40, 60)} className="dp-box" fill="white" />
+          <KonvaLabel spec={{ text: "Add", x: 505, y: 65, width: 40, height: 60, align: "center", vAlign: "middle", bold: true, fill: "#c0392b" }} />
+        </g>
+      )}
 
       {/* ---- MUX 1 (RegDst) ---- */}
       {/* In pipeline mode the RegDst mux sits in EX, after ID/EX, as in the
@@ -750,7 +950,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       control tick comes from above there, since the band below it carries
       the MEM/WB -> WR return wire. */}
       {pipeline ? (
-        <g>
+        <g transform={hzShift(regDstMux.x)}>
           <rect x={regDstMux.x} y={regDstMux.y} width={regDstMux.width} height={regDstMux.height} rx={7.5} className="dp-box" fill="#f2f2f2" />
           <KonvaLabels
             specs={[
@@ -794,7 +994,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       value. MUX 7's output feeds both MUX 2 (ALUSrc) and the store data
       line, so a forwarded rt reaches the ALU and Data Memory alike. */}
       {hazards && (
-        <g>
+        <g transform={hzShift(HAZARD_MUX6.x)}>
           {muxBox(HAZARD_MUX6, "MUX 6")}
           {ctrlLabel(HAZARD_FWDOP1_LABEL, "Fwdop1")}
           <CtrlTick x={HAZARD_MUX6.x + HAZARD_MUX6.width / 2} y1={HAZARD_FWDOP1_LABEL.y + HAZARD_FWDOP1_LABEL.height + 1} y2={HAZARD_MUX6.y} />
@@ -810,6 +1010,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       )}
 
       {/* ---- MUX 3 (MemToReg) ---- */}
+      <g transform={hzShift(780 + PIPELINE_OFFSET.WB)}>
       <g transform={stageShift("WB")}>
         <rect x={780} y={430} width={30} height={110} rx={7.5} className="dp-box" fill="#f2f2f2" />
         <KonvaLabels
@@ -820,8 +1021,70 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
         />
         <CtrlTick x={795} y1={540} y2={550} />
       </g>
+      </g>
+
+      {/* ---- Early-branch hardware (hazards mode) ---- */}
+      {/* Final coordinates (datapathBranch.ts). IF: MUX 4 (PC+4 vs. branch
+      target, selected by the comparator from above) and MUX 5 (vs. the jump
+      target), feeding PC; the jump shifter below IF/ID. ID: the branch
+      shifter and adder, FwdRD1/FwdRD2, and the isZero? comparator. */}
+      {hazards && (
+        <g>
+          {muxBox(BR_MUX4, "MUX 4")}
+          {jump && (
+            <>
+              {muxBox(BR_MUX5, "MUX 5")}
+              <CtrlTick x={BR_MUX5.x + BR_MUX5.width / 2} y1={BR_MUX5.y + BR_MUX5.height} y2={BR_JUMP_LABEL.y} />
+              {ctrlLabel(BR_JUMP_LABEL, "Jump")}
+              <ellipse cx={BR_JUMP_LS.cx} cy={BR_JUMP_LS.cy} rx={BR_JUMP_LS.rx} ry={BR_JUMP_LS.ry} className="dp-box" fill="#f2f2f2" />
+              <KonvaLabel
+                spec={{
+                  text: "Left Shift\n2-bit",
+                  x: BR_JUMP_LS.cx - BR_JUMP_LS.rx,
+                  y: BR_JUMP_LS.cy - BR_JUMP_LS.ry,
+                  width: 2 * BR_JUMP_LS.rx,
+                  height: 2 * BR_JUMP_LS.ry,
+                  align: "center",
+                  vAlign: "middle",
+                  bold: true,
+                  fontSize: 9,
+                }}
+              />
+              <KonvaLabel spec={{ ...BR_JADDR_LABEL, text: "inst[25:0]", align: "right", fontSize: 10 }} />
+            </>
+          )}
+
+          <ellipse cx={BR_LS.cx} cy={BR_LS.cy} rx={BR_LS.rx} ry={BR_LS.ry} className="dp-box" fill="#f2f2f2" />
+          <KonvaLabel
+            spec={{
+              text: "Left Shift\n2-bit",
+              x: BR_LS.cx - BR_LS.rx,
+              y: BR_LS.cy - BR_LS.ry,
+              width: 2 * BR_LS.rx,
+              height: 2 * BR_LS.ry,
+              align: "center",
+              vAlign: "middle",
+              bold: true,
+              fontSize: 9,
+            }}
+          />
+          <path d={aluPath(BR_ADD.x, BR_ADD.y, BR_ADD.width, BR_ADD.height)} className="dp-box" fill="white" />
+          <KonvaLabel spec={{ ...BR_ADD, x: BR_ADD.x + 4, text: "Add", align: "center", vAlign: "middle", bold: true, fill: "#c0392b", fontSize: 11 }} />
+
+          {muxBox(BR_FWDRD1, "MUX 8")}
+          {ctrlLabel(BR_FWDRD1_LABEL, "FwdRD1")}
+          <CtrlTick x={BR_FWDRD1.x + BR_FWDRD1.width / 2} y1={BR_FWDRD1_LABEL.y + BR_FWDRD1_LABEL.height} y2={BR_FWDRD1.y} />
+          {muxBox(BR_FWDRD2, "MUX 9")}
+          {ctrlLabel(BR_FWDRD2_LABEL, "FwdRD2")}
+          <CtrlTick x={BR_FWDRD2.x + BR_FWDRD2.width / 2} y1={BR_FWDRD2.y + BR_FWDRD2.height} y2={BR_FWDRD2_LABEL.y} />
+
+          <rect x={BR_CMP.x} y={BR_CMP.y} width={BR_CMP.width} height={BR_CMP.height} className="dp-box" fill="#f2f2f2" />
+          <KonvaLabel spec={{ ...BR_CMP, text: "isZero?", align: "center", vAlign: "middle", bold: true, fontSize: 10 }} />
+        </g>
+      )}
 
       {/* ---- MUX 4 (Branch) ---- */}
+      {!hazards && (
       <g transform={topMuxShift}>
         <rect x={780} y={25} width={30} height={90} rx={7.5} className="dp-box" fill="#f2f2f2" />
         <KonvaLabels
@@ -832,6 +1095,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
         />
         <CtrlTick x={795} y1={115} y2={125} />
       </g>
+      )}
 
       {/* ---- MUX 5 (Jump) ---- */}
       {/* NEW — processor.js never supported jumps, so there was never a
@@ -844,7 +1108,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       via MUX5_PC — see datapathWires.ts for why input 2 and the output
       share the right side instead of following MUX 4's left-in/right-out
       convention (a real gap-from-WD_ concern, not just taste). */}
-      {jump && (
+      {jump && !hazards && (
         <g transform={topMuxShift}>
           <rect x={840} y={25} width={30} height={90} rx={7.5} className="dp-box" fill="#f2f2f2" />
           <KonvaLabel spec={{ text: "MUX 5", x: 840, y: 25, width: 30, height: 90, align: "center", vAlign: "middle", bold: true }} />
@@ -864,7 +1128,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       cy=590 matches JADDR_LS/LS_MUX5's current endpoints in
       datapathWires.ts (poly(...,110,590) / poly(190,590,...)) — cx/rx are
       unchanged (110/190 = 150∓40), only the vertical position moved. */}
-      {jump && (
+      {jump && !hazards && (
         <g transform={pipeline ? `translate(${PIPELINE_OFFSET.ID} ${PIPELINE_BOTTOM_DY})` : undefined}>
           <ellipse cx={150} cy={590} rx={40} ry={18} className="dp-box" fill="#f2f2f2" />
           <KonvaLabel spec={{ text: "Left Shift\n2-bit", x: 110, y: 572, width: 80, height: 36, align: "center", vAlign: "middle", bold: true }} />
@@ -876,7 +1140,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       raw 26-bit jump index straight out of the fetched instruction word,
       not anything decoded via the rd/shamt/funct field boxes it happens
       to run past. Positioned directly beneath that segment. */}
-      {jump && (
+      {jump && !hazards && (
         <KonvaLabel
           spec={
             pipeline
@@ -893,7 +1157,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
           const at = BUBBLE_LABEL_AT[stage];
           return (
             at && (
-              <text key={stage} x={at.x} y={at.y} className="dp-bubble" textAnchor="middle">
+              <text key={stage} x={X(at.x)} y={at.y} className="dp-bubble" textAnchor="middle">
                 (bubble)
               </text>
             )
@@ -903,7 +1167,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       {/* ---- Control (pipeline mode) ---- */}
       {/* Last, so its hover overlay draws over the bars and every other
       component. */}
-      {pipeline && <ControlUnit />}
+      {pipeline && <ControlUnit hazards={hazards} />}
 
       {state?.error && (
         <text x={viewWidth / 2} y={pipeline ? PIPELINE_VIEW_Y + PIPELINE_VIEW_HEIGHT - 4 : 575} className="dp-error" textAnchor="middle">
