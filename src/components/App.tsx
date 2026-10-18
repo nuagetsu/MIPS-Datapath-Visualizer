@@ -61,6 +61,7 @@ import {
 import { destReg, isBranchOp, isJumpOp, stallReason, type PipelineSlotView } from "../lib/mips-machine/pipeline";
 import { REGISTERS } from "../lib/mips-machine/registers";
 import { collectProgramRefs, type ProgramRefs } from "../lib/mips-machine/programRefs";
+import { checkProgram, checkSource } from "../lib/mips-machine/staticCheck";
 import type { ProgramLine } from "../lib/mips-machine/interpreter";
 import type { CycleStage } from "../lib/mips-machine/machineState";
 import type { DataDecl, NumNode } from "../lib/mips-parser/ast";
@@ -438,6 +439,9 @@ export function App() {
   // Whether the console/editor currently show a run-time error (from the
   // step on screen), so scrubbing away from that step can clear it again.
   const showingRunErrorRef = useRef(false);
+  // The last assembled .data segment (without line numbers), to tell
+  // whether a re-assemble left it unchanged — a condition for resuming.
+  const lastDataKeyRef = useRef<string | null>(null);
 
   // ---- Parse / assemble --------------------------------------------------
   const handleParse = useCallback(() => {
@@ -456,37 +460,81 @@ export function App() {
     try {
       const { text, data } = result.program.prop;
       check(text, data);
+      checkSource(text, data); // lui $zero, la — see staticCheck.ts
       const assembled = assemble(text, data); // AssembledLine[] w kind, lbl, inst, cmt, loc, pc, 32 bit instruction
 
       const programLines: ProgramLine[] = assembled.map((line) => ({
         op: line.prop.inst.prop.op,
         bin: line.prop.bin,
       }));
+      // Errors that used to wait until run time: .data too big for
+      // memory, and memory accesses whose address is already known.
+      checkProgram(
+        programLines,
+        assembled.map((line) => line.prop.loc),
+        data,
+        memBank.size,
+      );
       // Same index space as programLines above — line.prop.loc is
       // 1-indexed (PEG.js convention), Ace rows are 0-indexed.
       const sourceLines: number[] = assembled.map((line) => line.prop.loc - 1);
+      const refs = collectProgramRefs(assembled.map((line) => line.prop.inst), data);
 
-      // Clear the previous run's memory marks first, so they don't count
-      // as "touched" by this new program.
-      memBank.RES();
-      initializeMemory(data, memBank);
+      // A fix for the run-time error the run stopped on? Same .data, and
+      // the same instructions except the one that failed: keep the run up
+      // to just before that instruction and carry on from there.
+      const dataKey = JSON.stringify(data, (key, value) => (key === "loc" ? undefined : value));
+      const resume = dataKey === lastDataKeyRef.current ? machine.planResume(programLines) : null;
+
+      // Test-run it before accepting it: build its whole run now (from the
+      // resume point, or from the start with .data loaded and $pc at 0).
+      // If the run hits a run-time error, nothing changes — the previous
+      // program and its run stay — and the error is reported like any
+      // other assembly error, at its line.
+      const runError = machine.prepare(
+        programLines,
+        resume,
+        () => {
+          // Clear the previous run's memory marks first, so they don't
+          // count as "touched" by this new program.
+          memBank.RES();
+          initializeMemory(data, memBank);
+          regBank.WR("pc", int32.num(0));
+        },
+      );
+      if (runError) {
+        const line = sourceLines[runError.pc] ?? 0;
+        consEditor.log(`Error at line ${line + 1}: ${runError.message}`);
+        consEditor.log(
+          `Found by test-running the program ${resume ? "from where it stopped" : "from the current register and memory values"} ` +
+            `before assembling. Fix the line and press Assemble again.`,
+        );
+        codeEditor.err(line);
+        return;
+      }
+
+      lastDataKeyRef.current = dataKey;
       dispEditor.load(mipsUtil.print(assembled));
       codeEditor.reset();
       dispEditor.reset();
-      // The new program's timeline is built once setProgram lands (see
-      // useMachineHistory), starting from the values in the banks now.
-      machine.reset();
       setProgram(programLines);
       setProgramSourceLines(sourceLines);
-      setProgramRefs(collectProgramRefs(assembled.map((line) => line.prop.inst), data));
-      setTouchedMemory(new Set());
+      setProgramRefs(refs);
+      if (resume) {
+        consEditor.log(
+          `Fixed line ${sourceLines[resume.pc] + 1}: resuming just before it runs ` +
+            `(${showPipeline ? "cycle" : "step"} ${resume.frame}). Earlier steps are kept.`,
+        );
+      } else {
+        setTouchedMemory(new Set());
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       consEditor.log(message);
       const loc = err instanceof CompileError ? err.loc : 0;
       codeEditor.err(Math.max(0, loc - 1));
     }
-  }, [codeEditor, dispEditor, consEditor, memBank, machine]);
+  }, [codeEditor, dispEditor, consEditor, memBank, regBank, machine, showPipeline]);
 
   // ---- Step / Back / Seek ---------------------------------------------
   const handleStep = useCallback(() => {
@@ -570,6 +618,10 @@ export function App() {
       // many times while scrubbing), rather than appended.
       consEditor.load("");
       consEditor.log(state.error);
+      consEditor.log(
+        `Fix line ${editorLine + 1} (without changing any other instruction or the .data) and ` +
+          `press Assemble to resume from here.`,
+      );
       codeEditor.err(editorLine);
       showingRunErrorRef.current = true;
       setPlaying(false);
@@ -592,8 +644,10 @@ export function App() {
         ctrlBank.RD(name, op);
       }
     }
+    // Re-runs on a new program too: Assemble clears the editor's markers,
+    // and after a fix-and-resume the step on screen may not change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [machine.current]);
+  }, [machine.current, programSourceLines]);
 
   // Load the default instructions upon starting
   useEffect(() => {

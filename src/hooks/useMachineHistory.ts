@@ -23,6 +23,11 @@
  *     (rebase()) — drops the frames after the one on screen and computes
  *     them again from it. As before, the hazard toggles only affect the
  *     cycles that follow.
+ *   - Fix and resume: if the run stopped on a run-time error and the newly
+ *     assembled program differs only in the instruction that failed,
+ *     planResume()/prepare() keep every frame up to just before that
+ *     instruction was fetched and recompute from there with the new
+ *     program, instead of starting over.
  *
  * Deliberately thin otherwise: each step's job is still (1) call execStage
  * (or the pipeline engine) with read access into the banks, (2) commit any
@@ -137,6 +142,40 @@ export interface MachineHistory {
   /** Call after editing a register or memory word by hand: the edit becomes
    * part of the frame on screen and everything after it is recomputed. */
   rebase: () => void;
+  /** Whether `next` (a newly assembled program) is a fix for the run-time
+   * error the timeline stopped on — same instructions, except the one that
+   * failed — and if so, where to resume: the frame just before that
+   * instruction was fetched. Null if the run didn't stop on an error, or
+   * anything else changed. */
+  planResume: (next: ProgramLine[]) => ResumePoint | null;
+  /**
+   * Test-runs a newly assembled program before it's accepted, by building
+   * its timeline straight away (up to MAX_PRECOMPUTED_STEPS steps):
+   *   - with `resume` (from planResume()): continuing the current run from
+   *     that frame;
+   *   - without: from the start, after `setup` has put the starting values
+   *     in the banks (e.g. loading .data).
+   * If the run reaches a run-time error, everything — timeline, registers,
+   * memory, `setup`'s changes — is put back as it was and the error is
+   * returned, for Assemble to report. Otherwise the new timeline is kept
+   * and null returned; set the program right after, and it won't be
+   * rebuilt.
+   */
+  prepare: (next: ProgramLine[], resume: ResumePoint | null, setup?: () => void) => RunError | null;
+}
+
+/** A run-time error found by prepare(). */
+export interface RunError {
+  message: string;
+  /** Program index of the instruction that fails. */
+  pc: number;
+}
+
+export interface ResumePoint {
+  /** The frame to resume from. */
+  frame: number;
+  /** Program index of the fixed instruction. */
+  pc: number;
 }
 
 export function useMachineHistory(
@@ -161,6 +200,14 @@ export function useMachineHistory(
   const headOpenRef = useRef(false);
   // The hazard settings the frames after the one on screen were built with.
   const settingsRef = useRef({ hazardUnit, earlyBranch });
+  // The program the step functions run. Normally the `program` argument;
+  // prepare() points it at the program being assembled while it test-runs
+  // it, before that program is the app's state.
+  const progRef = useRef(program);
+  progRef.current = program;
+  // Set by a successful prepare(): the timeline for the program about to
+  // arrive is already built, so the effect below mustn't rebuild it.
+  const preparedRef = useRef(false);
   const [position, setPosition] = useState(0);
   // Bumped whenever framesRef's contents change, to re-derive the timeline.
   const [version, setVersion] = useState(0);
@@ -197,20 +244,20 @@ export function useMachineHistory(
     stageIdxRef.current = snap.stageIdx;
     valsRef.current = snap.vals;
     haltedRef.current = snap.halted;
-    engineRef.current = snap.engine ? PipelineEngine.restore(program, baseReaders, snap.engine) : null;
+    engineRef.current = snap.engine ? PipelineEngine.restore(progRef.current, baseReaders, snap.engine) : null;
   }
 
   // ---- Executing one step on the live machine ------------------------------
 
   function canContinue(): boolean {
     if (haltedRef.current) return false;
-    if (pipeline) return engineRef.current ? engineRef.current.canStep() : canRun(program, 0);
-    return canRun(program, pcRef.current);
+    if (pipeline) return engineRef.current ? engineRef.current.canStep() : canRun(progRef.current, 0);
+    return canRun(progRef.current, pcRef.current);
   }
 
   function stepPipeline(): StepResult | null {
     if (haltedRef.current) return null;
-    if (!engineRef.current) engineRef.current = new PipelineEngine(program, baseReaders);
+    if (!engineRef.current) engineRef.current = new PipelineEngine(progRef.current, baseReaders);
     const result = engineRef.current.step(hazardUnit, earlyBranch);
     if (!result) {
       haltedRef.current = true;
@@ -251,7 +298,7 @@ export function useMachineHistory(
   }
 
   function stepSingle(): StepResult | null {
-    if (haltedRef.current || !canRun(program, pcRef.current)) {
+    if (haltedRef.current || !canRun(progRef.current, pcRef.current)) {
       haltedRef.current = true;
       return null;
     }
@@ -261,7 +308,7 @@ export function useMachineHistory(
 
     const stage = STAGES[stageIdxRef.current];
     const pcBits = regBank.RR("pc");
-    let state = execStage(program, pcRef.current, stage, valsRef.current, pcBits, {
+    let state = execStage(progRef.current, pcRef.current, stage, valsRef.current, pcBits, {
       readReg: regBank.RR,
       readWord: memBank.lw,
       readByte: memBank.lb,
@@ -345,8 +392,14 @@ export function useMachineHistory(
     rebuildFrom(0);
   }
 
-  // A new program or execution mode: build its whole timeline.
+  // A new program or execution mode: build its whole timeline — or, for a
+  // fix approved by planResume(), keep the timeline up to the resume point
+  // and carry on from there with the new program.
   useEffect(() => {
+    if (preparedRef.current) {
+      preparedRef.current = false;
+      return;
+    }
     rebuildAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [program, pipeline]);
@@ -412,6 +465,94 @@ export function useMachineHistory(
     rebuildFrom(p);
   }
 
+  // ---- Fix and resume ----------------------------------------------------------
+
+  function planResume(next: ProgramLine[]): ResumePoint | null {
+    const frames = framesRef.current;
+    const last = frames.length - 1;
+    const head = frames[last];
+    if (!head?.state?.error || next.length !== program.length) return null;
+
+    // The failing instruction, and the frame it was fetched in.
+    let pc: number;
+    let fetched = -1;
+    if (pipeline) {
+      const failing = head.slots.find((s) => s.state.error);
+      if (!failing) return null; // e.g. a store the memory bank refused
+      pc = failing.pc;
+      // seq numbers are unique, so the first frame with it in IF is its
+      // fetch (a stall can hold it there for more than one).
+      fetched = frames.findIndex((f) => f.slots.some((s) => s.seq === failing.seq && s.stage === "F"));
+    } else {
+      pc = head.state.pc;
+      // The latest Fetch of that instruction (it may have run before, in a
+      // loop, without failing).
+      for (let i = last; i >= 1; i--) {
+        const s = frames[i].state;
+        if (s && s.pc === pc && s.stage === "F") {
+          fetched = i;
+          break;
+        }
+      }
+    }
+    if (fetched < 1) return null;
+
+    // Only that instruction may differ, and it must.
+    const sameLine = (a: ProgramLine, b: ProgramLine) => a.op === b.op && a.bin.join("") === b.bin.join("");
+    for (let i = 0; i < next.length; i++) {
+      if (i !== pc && !sameLine(program[i], next[i])) return null;
+    }
+    if (sameLine(program[pc], next[pc])) return null;
+    return { frame: fetched - 1, pc };
+  }
+
+  /** The run-time error the timeline ends on, if it ends on one. */
+  function headError(): RunError | null {
+    const frames = framesRef.current;
+    const head = frames[frames.length - 1];
+    const state = head?.state;
+    if (!state?.error) return null;
+    // Pipeline mode: the summary state is the failing instruction's when
+    // one failed; prefer the failing slot's own pc if there is one.
+    const failing = head.slots.find((s) => s.state.error);
+    return { message: state.error, pc: failing ? failing.pc : state.pc };
+  }
+
+  function prepare(next: ProgramLine[], resume: ResumePoint | null, setup?: () => void): RunError | null {
+    // Everything needed to put things back if the test run fails.
+    const savedFrames = framesRef.current;
+    const savedPosition = positionRef.current;
+    const savedHeadOpen = headOpenRef.current;
+    const savedSettings = settingsRef.current;
+    const savedLive = capture();
+
+    progRef.current = next;
+    if (resume && resume.frame < savedFrames.length) {
+      // Work on a copy: rebuildFrom() truncates the array it's given.
+      framesRef.current = savedFrames.slice(0, resume.frame + 1);
+      rebuildFrom(resume.frame);
+    } else {
+      setup?.();
+      rebuildAll();
+    }
+
+    const error = headError();
+    if (!error) {
+      preparedRef.current = true;
+      return null;
+    }
+
+    // The program would fail: put the previous program's run back exactly
+    // as it was (bank displays included — this restore is queued last).
+    progRef.current = program;
+    framesRef.current = savedFrames;
+    headOpenRef.current = savedHeadOpen;
+    settingsRef.current = savedSettings;
+    apply(savedLive);
+    show(savedPosition, true);
+    return error;
+  }
+
   // ---- Derived views -----------------------------------------------------------
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -446,5 +587,7 @@ export function useMachineHistory(
     seek,
     reset,
     rebase,
+    planResume,
+    prepare,
   };
 }
