@@ -184,6 +184,9 @@ function print_asm(ast: AssembledLine[]): string {
 
 // ---- Type checker -------------------------------------------------------
 
+/** Rejects any instruction whose destination register is $zero: R/I/L/S
+ * arithmetic, lui (U), and the loads lw/lb. (sw/sb's "dst" is the value
+ * being stored, not written, so they're fine; B/J have no destination.) */
 function check$dst_zero(ast: TextLine[]): void {
   for (const line of ast) {
     const inst = line.prop.inst;
@@ -193,7 +196,10 @@ function check$dst_zero(ast: TextLine[]): void {
       inst.prop.type === "R" ||
       inst.prop.type === "I" ||
       inst.prop.type === "L" ||
-      inst.prop.type === "S"
+      inst.prop.type === "S" ||
+      // Was missing: lui $zero assembled fine and only failed at run time,
+      // in write-back ("Attempt to write to a readonly register zero").
+      inst.prop.type === "U"
     ) {
       if (inst.prop.dst.prop.num === 0) throw mips$InvalidReg(inst, line.prop.loc);
     } else if (inst.prop.type === "M" && (inst.prop.op === "lw" || inst.prop.op === "lb")) {

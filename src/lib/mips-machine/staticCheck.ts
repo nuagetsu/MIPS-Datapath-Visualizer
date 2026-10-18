@@ -7,10 +7,6 @@
  * message text.
  *
  *   checkSource(text, data)            before assemble():
- *     - `lui $zero, ...`: writes $zero. mips-util's check$dst_zero catches
- *       R/I/L/S/lw/lb destinations but not lui (U type), so this used to
- *       fail at run time with "Attempt to write to a readonly register
- *       zero".
  *     - `la`: not implemented by the assembler yet (see mips-util's
  *       assemble() notes). It used to throw a plain Error with no line,
  *       so the editor marked line 1 instead of the `la`.
@@ -44,6 +40,9 @@
  *     checked, assuming nothing but $zero — so an address that is wrong no
  *     matter what the registers hold, like -100($zero), is always caught.
  *
+ * (Writes to $zero, including `lui $zero`, are rejected by the assembler
+ * itself: mips-util's check$dst_zero.)
+ *
  * Errors that depend on values only known while running (an address
  * computed from a loaded word, or from a register you edit mid-run) can't
  * be found here; they still stop the run when reached — and can then be
@@ -65,10 +64,6 @@ export function checkSource(text: TextLine[], _data: DataDecl[] | null): void {
     const inst = line.prop.inst;
     if (inst === null) continue;
     const loc = line.prop.loc;
-    if (inst.prop.type === "U" && inst.prop.dst.prop.num === 0) {
-      // Same message execStage's write-back reports for it.
-      throw new CompileError("Attempt to write to a readonly register zero", "check", [inst, loc], loc);
-    }
     if (inst.prop.type === "V") {
       throw new CompileError(
         `"la" (load address) is not supported yet, at line ${loc} — load the address with lui/ori, or use addi from $zero`,
