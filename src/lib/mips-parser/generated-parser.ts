@@ -1,6 +1,6 @@
 /* eslint-disable */
 
-import { REG_NUM_TO_NAME, REG_NAME_TO_NUM, USABLE_REG_NUMS_TEXT } from "../mips-machine/registers";
+import { REG_NUM_TO_NAME, REG_NAME_TO_NUM, USABLE_REG_NUMS_TEXT } from "../mips-isa/registers";
 
 
 
