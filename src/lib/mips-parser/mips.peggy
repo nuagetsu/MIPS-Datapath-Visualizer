@@ -1,5 +1,10 @@
 // MIPS assembly grammar, for use with Peggy + ts-pegjs:
-//   npx peggy --plugin ts-pegjs -o generated-parser.ts mips.peggy
+//   npx peggy --plugin ts-pegjs --extra-options-file pegconfig.json -o generated-parser.ts mips.peggy
+//
+// pegconfig.json (next to this file) injects the register-table import
+// into the generated parser's header via ts-pegjs's `customHeader`
+// option — see the Registers section below. Without it the generated
+// file won't compile (REG_NUM_TO_NAME etc. would be undefined).
 //
 // Reconstructed from the original generated PEG.js 0.10 output (no source
 // grammar was available), then extended to cover the instruction set
@@ -17,10 +22,8 @@
 //   J  - jump                                       (j label)
 // Also added: bne (join beq in BOp), lb/sb (join lw/sw in MOp).
 //
-// Register set: the original only had $zero/$v0-$v1/$a0-$a3/$t0-$t9/
-// $s0-$s7 (24 registers). $at/$k0/$k1/$gp/$sp/$fp/$ra were briefly added
-// for full 32-register coverage, then deliberately removed again — see
-// the Reg rule below for why.
+// Register set: defined once, in mips-machine/registers.ts (REGISTERS),
+// and shared with the simulator — see the Registers section below.
 //
 // NOTE: adding "lui" to this grammar is only half the work. mips-util.js's
 // opcode table has no "lui" entry, translate$inst has no "U" or "V" case,
@@ -62,34 +65,12 @@
     return num >= low && num < upp;
   }
 
-  // Canonical register names/numbers.
-  //
-  // DELIBERATE DEVIATION FROM THE FULL 32-REGISTER SET ADDED EARLIER IN
-  // THIS PORT: $at (1) and $k0/$k1/$gp/$sp/$fp/$ra (26-31) are removed —
-  // these are conventionally reserved (assembler-temporary, OS/kernel,
-  // global/stack/frame pointer, return address respectively), and this
-  // simulator has no calling-convention/OS support that would give them
-  // real meaning anyway. Kept as `null` holes in REG_NAMES, rather than
-  // compacted, so REG_NAMES[num] stays a direct index — $t0 must still be
-  // register 8, not shifted down because $at (1) was removed.
-  const REG_NAMES = [
-    "$zero", null, "$v0", "$v1", "$a0", "$a1", "$a2", "$a3",
-    "$t0", "$t1", "$t2", "$t3", "$t4", "$t5", "$t6", "$t7",
-    "$s0", "$s1", "$s2", "$s3", "$s4", "$s5", "$s6", "$s7",
-    "$t8", "$t9", null, null, null, null, null, null,
-  ];
-  // Plain loop, not a filter/map chain — a chained
-  // .map((n,i)=>[n,i]).filter(...).map(([n,i])=>n.slice(1)) looks
-  // cleaner but doesn't narrow `string | null` -> `string` through the
-  // array-literal tuple the way an `if` inside a loop does, and fails to
-  // compile as a result (confirmed against the real compiler, not
-  // assumed).
-  const REG_NUMS = {};
-  REG_NAMES.forEach((n, i) => {
-    if (n !== null) REG_NUMS[n.slice(1)] = i;
-  });
+  // Register names/numbers come from mips-machine/registers.ts
+  // (REG_NUM_TO_NAME, REG_NAME_TO_NUM, USABLE_REG_NUMS_TEXT — imported via
+  // pegconfig.json's customHeader). No register list lives here any more.
+  // Node names keep the leading "$" ("$t0"), as before.
   function REG(name, num) {
-    return { kind: "reg", prop: { name, num } };
+    return { kind: "reg", prop: { name: "$" + name, num } };
   }
 
   function R(op, dst, src, tgt) { return { kind: "op", prop: { type: "R", op: op.toLowerCase(), dst, src, tgt } }; }
@@ -117,8 +98,7 @@ DataSeg
   = _ ".data" _ _n _ datas:Datas { return datas; }
 
 Datas
-  = _ data:Data _ _n _ rest:Datas { rest.unshift(data); return rest; }
-  / _ data:Data { return [data]; }
+  = _ head:Data tail:(_ _n _ @Data)* { return [head, ...tail]; }
   / _ { return []; }
 
 Data
@@ -127,20 +107,16 @@ Data
   / _ name:Lbl _ ":" _ ".asciiz" _ vals:Str   { return Data("str",  name, vals, location().start.line); }
 
 Val32 "32-bit values"
-  = _ num:C32 _ "," _ vals:Val32 { vals.unshift(num); return vals; }
-  / _ num:C32 { return [num]; }
+  = _ head:C32 tail:(_ "," _ @C32)* { return [head, ...tail]; }
 
 Val8 "8-bit values"
-  = _ num:C8 _ "," _ vals:Val8 { vals.unshift(num); return vals; }
-  / _ num:C8 { return [num]; }
+  = _ head:C8 tail:(_ "," _ @C8)* { return [head, ...tail]; }
 
 TextSeg
   = _ ".text" _ _n _ texts:Texts { return texts; }
 
 Texts
-  = _ text:Text _ _n _ rest:Texts { rest.unshift(text); return rest; }
-  / _ text:Text _a { return [text]; }
-  / _a { return []; }
+  = _ head:Text tail:(_ _n _ @Text)* _a { return [head, ...tail]; }
 
 Text
   = _ lbl:(Lbl _ ":")? _ inst:Inst? _ cmt:Cmt? {
@@ -227,30 +203,25 @@ JOp "jump"
 // and correctly resolved $v0 -> register 2 after it.
 IdChar = [A-Za-z_0-9]
 
-// $at (1) and $k0/$k1/$gp/$sp/$fp/$ra (26-31) are deliberately excluded
-// below — not a bug, a decision. Conventionally: $at is reserved for the
-// assembler's own use when expanding pseudo-instructions (e.g. the future
-// `la` expansion into lui+ori would want it); $k0/$k1 are reserved for
-// OS/kernel use; $gp/$sp/$fp are the global/stack/frame pointers a real
-// calling convention manages; $ra holds the return address `jal`/`jr`
-// use. This simulator doesn't implement pseudo-instruction expansion,
-// an OS, or function calls (no `jal`), so none of these would carry real
-// meaning here — allowing them anyway would just let someone use `$sp`
-// as an ordinary scratch register, silently teaching the wrong mental
-// model. Rejected by both name AND number ($26 fails exactly like $k0
-// does) — see REG_NAMES's `null` holes above.
+// Which registers are usable is decided in mips-machine/registers.ts, not
+// here: that file's header explains why $at (1) and $k0/$k1/$gp/$sp/$fp/
+// $ra (26-31) are left out. Anything absent from REGISTERS is rejected
+// by name AND by number ($26 fails exactly like $k0 does). $pc has no
+// number, so it's absent from both lookups and can't be named either.
 Reg "regs"
   = _ "$" n:$([0-9]+) !IdChar {
       const num = parseInt(n, 10);
-      if (num < 0 || num > 31 || REG_NAMES[num] === null) {
-        expected("a usable register (0, 2-25 — 1 and 26-31 are reserved)");
+      const name = REG_NUM_TO_NAME.get(num);
+      if (name === undefined) {
+        expected(`a usable register number (${USABLE_REG_NUMS_TEXT})`);
       }
-      return REG(REG_NAMES[num], num);
+      return REG(name, num);
     }
   / _ "$" name:$([A-Za-z0-9]+) !IdChar {
-      const num = REG_NUMS[name.toLowerCase()];
+      const bare = name.toLowerCase();
+      const num = REG_NAME_TO_NUM.get(bare);
       if (num === undefined) { expected("valid register name"); }
-      return REG(REG_NAMES[num], num);
+      return REG(bare, num);
     }
 
 // ---- Labels, comments, literals ------------------------------------------

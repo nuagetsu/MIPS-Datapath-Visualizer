@@ -30,8 +30,8 @@ export interface SourceLocation {
 export interface RegNode {
   kind: "reg";
   prop: {
-    name: string; // canonical form, e.g. "$t0", "$zero", "$ra"
-    num: number; // 0-31 register index
+    name: string; // canonical form, e.g. "$t0", "$zero"
+    num: number;  // register index; only those in mips-machine/registers.ts
   };
 }
  
