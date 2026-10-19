@@ -23,7 +23,7 @@
 import { int32, type Int32Bits } from "../Numbers/int32";
 import * as bit from "../Numbers/bit";
 import { RuntimeError } from "../Numbers/err";
-import { REGISTERS } from "./registers";
+import { REGISTERS } from "../mips-isa/registers";
 import { ctrlValue, isKnownOp, type Kind } from "./ctrl";
 import { decodeFields, decodeJumpIndex, type WireId } from "./datapath";
 import type { CycleStage, MachineState, ValsSnapshot } from "./machineState";

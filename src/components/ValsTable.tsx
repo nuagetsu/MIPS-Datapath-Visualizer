@@ -1,5 +1,5 @@
 import { int32, type Int32Bits } from "../lib/Numbers/int32";
-import { VALS, type ValDef } from "../lib/mips-machine/vals";
+import { VALS, type ValEntry } from "../lib/mips-machine/vals";
 import type { ValsBank, ValDisplay, DisplayBase } from "../hooks/useValsBank";
 import "./ValsTable.css";
 
@@ -30,7 +30,8 @@ function formatValue(bits: Int32Bits, base: DisplayBase): string {
 }
 
 interface ValRowProps {
-  def: ValDef;
+  /** A VALS entry (not just any ValDef), so def.key is a ValKey. */
+  def: ValEntry;
   state: ValDisplay;
   setBase: ValsBank["setBase"];
 }

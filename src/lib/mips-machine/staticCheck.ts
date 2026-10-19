@@ -52,7 +52,7 @@ import { int32, type Int32Bits } from "../Numbers/int32";
 import { CompileError } from "../Numbers/err";
 import { execStage, type MachineInputs, type ProgramLine } from "./interpreter";
 import { ctrlValue, isKnownOp } from "./ctrl";
-import { REGISTERS } from "./registers";
+import { REGISTERS } from "../mips-isa/registers";
 import { outOfRangeMem, unalignedMem, wordIndexOf } from "./memoryWords";
 import type { CycleStage, ValsSnapshot } from "./machineState";
 import type { DataDecl, NumNode, TextLine } from "../mips-parser/ast";

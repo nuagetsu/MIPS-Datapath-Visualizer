@@ -20,7 +20,7 @@
 import { useCallback, useRef, useState } from "react";
 import { int32, type Int32Bits } from "../lib/Numbers/int32";
 import { RuntimeError } from "../lib/Numbers/err";
-import { REGISTERS } from "../lib/mips-machine/registers";
+import { REGISTERS } from "../lib/mips-isa/registers";
 
 export type DisplayBase = "hex" | "dec";
 export type MarkStatus = "default" | "success" | "warning" | "danger";

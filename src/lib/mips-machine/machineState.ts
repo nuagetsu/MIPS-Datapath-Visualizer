@@ -4,17 +4,19 @@
  */
 import type { Int32Bits } from "../Numbers/int32";
 import type { DecodedFields, WireId } from "./datapath";
+import type { ValKey } from "./vals";
 
 export type CycleStage = "F" | "D" | "A" | "M" | "R";
 
 /**
  * The datapath's scratch/wire values, as of the end of this micro-step.
- * Deliberately reuses vals.ts's exact key vocabulary (REGRR1, ALUres,
- * MEMAddr, ...) so there's one canonical name per wire value shared
- * between the (already-ported) ValsTable UI and this new state-history
- * model.
+ * Keyed by vals.ts's ValKey (REGRR1, ALUres, MEMAddr, ...) so there's one
+ * canonical name per wire value shared between the ValsTable UI and this
+ * state-history model — and so a misspelt key is a compile error (see
+ * vals.ts's header comment). Partial: a key is only present once the stage
+ * that produces it has run.
  */
-export type ValsSnapshot = Partial<Record<string, Int32Bits>>;
+export type ValsSnapshot = Partial<Record<ValKey, Int32Bits>>;
 
 export interface RegisterWrite {
   /** Bare register name, e.g. "t0", "zero" — no leading $. */

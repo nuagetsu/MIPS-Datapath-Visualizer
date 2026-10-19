@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { int32, type Int32Bits } from "../lib/Numbers/int32";
-import { REGISTERS, type RegisterDef } from "../lib/mips-machine/registers";
+import { REGISTERS, type RegisterDef } from "../lib/mips-isa/registers";
 import type { RegisterBank, RegisterDisplay, DisplayBase } from "../hooks/useRegisterBank";
 import "./RegisterTable.css";
  

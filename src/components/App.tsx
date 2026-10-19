@@ -48,6 +48,7 @@ import mipsUtil, { check, assemble } from "../lib/mips-parser/mips-util";
 import { int32 } from "../lib/Numbers/int32";
 import { CompileError } from "../lib/Numbers/err";
 import { isKnownOp } from "../lib/mips-machine/ctrl";
+import { VALS } from "../lib/mips-machine/vals";
 import {
   computeForwarding,
   computeBranchForwarding,
@@ -59,7 +60,7 @@ import {
   type BranchForwardingSignals,
 } from "../lib/mips-machine/forwarding";
 import { destReg, isBranchOp, isJumpOp, stallReason, type PipelineSlotView } from "../lib/mips-machine/pipeline";
-import { REGISTERS } from "../lib/mips-machine/registers";
+import { REGISTERS } from "../lib/mips-isa/registers";
 import { collectProgramRefs, type ProgramRefs } from "../lib/mips-machine/programRefs";
 import { checkProgram, checkSource } from "../lib/mips-machine/staticCheck";
 import type { ProgramLine } from "../lib/mips-machine/interpreter";
@@ -460,7 +461,7 @@ export function App() {
     try {
       const { text, data } = result.program.prop;
       check(text, data);
-      checkSource(text, data); // lui $zero, la — see staticCheck.ts
+      checkSource(text, data); // la not supported yet — see staticCheck.ts
       const assembled = assemble(text, data); // AssembledLine[] w kind, lbl, inst, cmt, loc, pc, 32 bit instruction
 
       const programLines: ProgramLine[] = assembled.map((line) => ({
@@ -628,8 +629,11 @@ export function App() {
       return;
     }
 
-    // vals: every key present this step gets repainted as "just updated" —
-    for (const [key, bits] of Object.entries(state.vals)) {
+    // vals: every key present this step gets repainted as "just updated".
+    // Iterates VALS rather than Object.entries(state.vals), whose keys are
+    // plain strings, so every key handed to WR() is a checked ValKey.
+    for (const { key } of VALS) {
+      const bits = state.vals[key];
       if (bits) valsBank.WR(key, bits);
     }
 

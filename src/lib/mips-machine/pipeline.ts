@@ -79,6 +79,7 @@ import * as bit from "../Numbers/bit";
 import { canRun, execStage, type MachineInputs, type ProgramLine } from "./interpreter";
 import { ctrlValue, isKnownOp } from "./ctrl";
 import type { CycleStage, MachineState, MemoryWrite, RegisterWrite, ValsSnapshot } from "./machineState";
+import type { ValKey } from "./vals";
 import type { WireId } from "./datapath";
 import { unalignedMem, outOfRangeMem, wordIndexOf, byteOffsetOf, getByteBits, setByteBits } from "./memoryWords";
 
@@ -438,8 +439,9 @@ function stateOf(s: Slot): MachineState {
  * the instructions in flight: the vals table then shows what's on the
  * datapath this cycle (Decode's register reads, the ALU's operands and
  * result, Memory's address and data, write-back's value), each from the
- * instruction in that stage. */
-const STAGE_VAL_KEYS: Record<CycleStage, string[]> = {
+ * instruction in that stage. Typed with ValKey, so a misspelt key here is a
+ * compile error rather than a value that silently never shows. */
+const STAGE_VAL_KEYS: Record<CycleStage, readonly ValKey[]> = {
   F: [],
   D: ["REGRR1", "REGRD1", "REGRR2", "REGRD2", "REGWR"],
   A: ["ALUop1", "ALUop2", "ALUres"],

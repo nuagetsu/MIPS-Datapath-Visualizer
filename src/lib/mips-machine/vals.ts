@@ -12,7 +12,16 @@
  * vals.WR("REGRR1", ...), vals.WR("ALUres", ...), vals.WR("MEMAddr", ...)).
  * It's just `comp + name`, matching the original's `_vals[comp+name]`
  * lookup — kept as an explicit field here instead of concatenated at every
- * call site so a typo can't silently produce a wrong key.
+ * call site.
+ *
+ * VALS is also the single source of the ValKey type (the same trick ctrl.ts
+ * uses for Kind): `as const` keeps each key as its literal string, so
+ * ValKey is exactly "REGRR1" | "REGRR2" | ... | "MEMRD". ValsSnapshot
+ * (machineState.ts), useValsBank's RD/WR/setBase and pipeline.ts's
+ * STAGE_VAL_KEYS are all typed with it, so a misspelt key — reading
+ * `vals.REGDR1`, writing `{ ...vals, REGDR1: rd1 }`, `valsBank.WR("REGDR1",
+ * ...)` — is a compile error rather than a silent `undefined` (read as 0)
+ * or a stray entry the table never shows.
  */
 export interface ValDef {
   /** Bare signal name, e.g. "RR1", "op1", "Addr" — shown after the sup
@@ -24,7 +33,7 @@ export interface ValDef {
   key: string;
 }
 
-export const VALS: ValDef[] = [
+export const VALS = [
   { name: "RR1", comp: "REG", key: "REGRR1" },
   { name: "RR2", comp: "REG", key: "REGRR2" },
   { name: "WR", comp: "REG", key: "REGWR" },
@@ -37,4 +46,10 @@ export const VALS: ValDef[] = [
   { name: "Addr", comp: "MEM", key: "MEMAddr" },
   { name: "WD", comp: "MEM", key: "MEMWD" },
   { name: "RD", comp: "MEM", key: "MEMRD" },
-];
+] as const satisfies readonly ValDef[];
+
+/** One entry of VALS, with its literal name/comp/key types. */
+export type ValEntry = (typeof VALS)[number];
+
+/** Every valid wire key: "REGRR1" | "REGRR2" | ... | "MEMRD". */
+export type ValKey = ValEntry["key"];
