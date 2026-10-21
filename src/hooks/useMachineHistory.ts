@@ -72,7 +72,7 @@ const STAGES: CycleStage[] = ["F", "D", "A", "M", "R"];
 /** How many steps are computed ahead when a timeline is built. Runs that
  * are longer (e.g. an endless loop) stop here; step() at the end of the
  * timeline keeps extending it one step at a time. */
-export const MAX_PRECOMPUTED_STEPS = 5000;
+export const MAX_PRECOMPUTED_STEPS = 300;
 
 // Stable empties, so memos keyed on pipelineSlots don't rerun every render.
 const NO_SLOTS: PipelineSlotView[] = [];

@@ -36,6 +36,11 @@
  * transform around the original Konva origin point, which is the direct
  * SVG equivalent of Konva's own rotate-around-origin behavior.
  *
+ * Labels must fit their boxes: KonvaLabel doesn't wrap. So "Instruction
+ * Memory" and every mux's "MUX N" are split over two centred lines — on
+ * one line they're wider than their boxes (90 and 26–30 units wide) and
+ * spill out over the box edges and the wires beside them.
+ *
  * Responsive by construction — unchanged from before: fixed coordinate
  * system inside one `viewBox` (originally 900×580, matching every
  * coordinate ported from processor.js; bumped to 900×620 to actually
@@ -226,6 +231,12 @@ export const PIPELINE_WIRE_COLOURS = ["#d0342c", "#1f6fd6", "#1e9e46", "#e67e00"
 
 function fieldBits(inst: Int32Bits, idx: number, len: number): string {
   return bit.get(inst, idx, len).join("");
+}
+
+/** A mux's label, "MUX N", as two centred lines ("MUX" over "N"): on one
+ * line it's wider than the 26–30-unit mux boxes. */
+function muxLabel(n: number | string): string {
+  return `MUX\n${n}`;
 }
 
 // ---- Text: a single, data-driven box model instead of hand-placed <text>
@@ -564,10 +575,10 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
         { key: "store-mem", seg: HAZARD_STORE_MEM, colour: pieceColour("_MWD", HAZARD_STORE_MEM) },
       ]
     : [];
-  const muxBox = (m: { x: number; y: number; width: number; height: number }, label: string) => (
+  const muxBox = (m: { x: number; y: number; width: number; height: number }, n: number) => (
     <>
       <rect x={m.x} y={m.y} width={m.width} height={m.height} rx={7.5} className="dp-box" fill="#f2f2f2" />
-      <KonvaLabel spec={{ text: label, x: m.x, y: m.y, width: m.width, height: m.height, align: "center", vAlign: "middle", bold: true, fontSize: 11 }} />
+      <KonvaLabel spec={{ text: muxLabel(n), x: m.x, y: m.y, width: m.width, height: m.height, align: "center", vAlign: "middle", bold: true, fontSize: 11 }} />
     </>
   );
   const ctrlLabel = (box: { x: number; y: number; width: number; height: number }, text: string) => (
@@ -785,7 +796,9 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       {/* In pipeline mode IM sits directly under PC (see PIPELINE_IF in
       datapathWires.ts): the address arrives from above, so "Address" moves
       to the top edge, and the instruction leaves the right edge toward
-      IF/ID, so "Instruction" moves to the right at that wire's height. */}
+      IF/ID, so "Instruction" moves to the right at that wire's height.
+      The title is two lines in both layouts: on one line it's wider than
+      the box. */}
       {pipeline ? (
         <g>
           <rect x={im.x} y={im.y} width={im.width} height={im.height} className="dp-box" fill="#e8e5bb" />
@@ -802,7 +815,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
           <rect x={15} y={15} width={100} height={120} className="dp-box" fill="#e8e5bb" />
           <KonvaLabels
             specs={[
-              { text: "Instruction Memory", x: 20, y: 20, width: 90, height: 30, align: "center", bold: true, fill: "#c0392b" },
+              { text: "Instruction\nMemory", x: 20, y: 20, width: 90, height: 30, align: "center", bold: true, fill: "#c0392b" },
               { text: "Instruction", x: 20, y: 70, width: 90, height: 30, align: "left" },
               { text: "Address", x: 20, y: 110, width: 90, height: 30, align: "right" },
             ]}
@@ -972,7 +985,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
           <rect x={regDstMux.x} y={regDstMux.y} width={regDstMux.width} height={regDstMux.height} rx={7.5} className="dp-box" fill="#f2f2f2" />
           <KonvaLabels
             specs={[
-              { text: "MUX 1", x: regDstMux.x, y: regDstMux.y, width: regDstMux.width, height: regDstMux.height, align: "center", vAlign: "middle", bold: true },
+              { text: muxLabel(1), x: regDstMux.x, y: regDstMux.y, width: regDstMux.width, height: regDstMux.height, align: "center", vAlign: "middle", bold: true },
               { text: "RegDst", x: regDstMux.x - 20, y: regDstMux.y - 27, width: regDstMux.width + 40, height: 16, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
             ]}
           />
@@ -983,7 +996,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
           <rect x={130} y={340} width={30} height={70} rx={7.5} className="dp-box" fill="#f2f2f2" />
           <KonvaLabels
             specs={[
-              { text: "MUX 1", x: 130, y: 340, width: 30, height: 70, align: "center", vAlign: "middle", bold: true },
+              { text: muxLabel(1), x: 130, y: 340, width: 30, height: 70, align: "center", vAlign: "middle", bold: true },
               { text: "RegDst", x: 110, y: 415, width: 70, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
             ]}
           />
@@ -997,7 +1010,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
           <rect x={390} y={355} width={30} height={75} rx={7.5} className="dp-box" fill="#f2f2f2" />
           <KonvaLabels
             specs={[
-              { text: "MUX 2", x: 390, y: 360, width: 30, height: 70, align: "center", vAlign: "middle", bold: true },
+              { text: muxLabel(2), x: 390, y: 355, width: 30, height: 75, align: "center", vAlign: "middle", bold: true },
               { text: "ALUSrc", x: 370, y: 435, width: 70, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
             ]}
           />
@@ -1013,15 +1026,15 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       line, so a forwarded rt reaches the ALU and Data Memory alike. */}
       {hazards && (
         <g transform={hzShift(HAZARD_MUX6.x)}>
-          {muxBox(HAZARD_MUX6, "MUX 6")}
+          {muxBox(HAZARD_MUX6, 6)}
           {ctrlLabel(HAZARD_FWDOP1_LABEL, "Fwdop1")}
           <CtrlTick x={HAZARD_MUX6.x + HAZARD_MUX6.width / 2} y1={HAZARD_FWDOP1_LABEL.y + HAZARD_FWDOP1_LABEL.height + 1} y2={HAZARD_MUX6.y} />
 
-          {muxBox(HAZARD_MUX7, "MUX 7")}
+          {muxBox(HAZARD_MUX7, 7)}
           {ctrlLabel(HAZARD_FWDOP2_LABEL, "Fwdop2")}
           <CtrlTick x={HAZARD_MUX7.x + HAZARD_MUX7.width / 2} y1={HAZARD_FWDOP2_LABEL.y + HAZARD_FWDOP2_LABEL.height + 1} y2={HAZARD_MUX7.y} />
 
-          {muxBox(HAZARD_MUX2, "MUX 2")}
+          {muxBox(HAZARD_MUX2, 2)}
           {ctrlLabel(HAZARD_ALUSRC_LABEL, "ALUSrc")}
           <CtrlTick x={HAZARD_MUX2.x + HAZARD_MUX2.width / 2} y1={HAZARD_MUX2.y + HAZARD_MUX2.height} y2={HAZARD_MUX2.y + HAZARD_MUX2.height + 10} />
         </g>
@@ -1033,7 +1046,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
         <rect x={780} y={430} width={30} height={110} rx={7.5} className="dp-box" fill="#f2f2f2" />
         <KonvaLabels
           specs={[
-            { text: "MUX 3", x: 780, y: 450, width: 30, height: 70, align: "center", vAlign: "middle", bold: true },
+            { text: muxLabel(3), x: 780, y: 430, width: 30, height: 110, align: "center", vAlign: "middle", bold: true },
             { text: "MemToReg", x: 760, y: 545, width: 70, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
           ]}
         />
@@ -1048,10 +1061,10 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       shifter and adder, FwdRD1/FwdRD2, and the isZero? comparator. */}
       {early && (
         <g>
-          {muxBox(BR_MUX4, "MUX 4")}
+          {muxBox(BR_MUX4, 4)}
           {jump && (
             <>
-              {muxBox(BR_MUX5, "MUX 5")}
+              {muxBox(BR_MUX5, 5)}
               <CtrlTick x={BR_MUX5.x + BR_MUX5.width / 2} y1={BR_MUX5.y + BR_MUX5.height} y2={BR_JUMP_LABEL.y} />
               {ctrlLabel(BR_JUMP_LABEL, "Jump")}
               <ellipse cx={BR_JUMP_LS.cx} cy={BR_JUMP_LS.cy} rx={BR_JUMP_LS.rx} ry={BR_JUMP_LS.ry} className="dp-box" fill="#f2f2f2" />
@@ -1089,10 +1102,10 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
           <path d={aluPath(BR_ADD.x, BR_ADD.y, BR_ADD.width, BR_ADD.height)} className="dp-box" fill="white" />
           <KonvaLabel spec={{ ...BR_ADD, x: BR_ADD.x + 4, text: "Add", align: "center", vAlign: "middle", bold: true, fill: "#c0392b", fontSize: 11 }} />
 
-          {muxBox(BR_FWDRD1, "MUX 8")}
+          {muxBox(BR_FWDRD1, 8)}
           {ctrlLabel(BR_FWDRD1_LABEL, "FwdRD1")}
           <CtrlTick x={BR_FWDRD1.x + BR_FWDRD1.width / 2} y1={BR_FWDRD1_LABEL.y + BR_FWDRD1_LABEL.height} y2={BR_FWDRD1.y} />
-          {muxBox(BR_FWDRD2, "MUX 9")}
+          {muxBox(BR_FWDRD2, 9)}
           {ctrlLabel(BR_FWDRD2_LABEL, "FwdRD2")}
           <CtrlTick x={BR_FWDRD2.x + BR_FWDRD2.width / 2} y1={BR_FWDRD2.y + BR_FWDRD2.height} y2={BR_FWDRD2_LABEL.y} />
 
@@ -1107,7 +1120,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
         <rect x={780} y={25} width={30} height={90} rx={7.5} className="dp-box" fill="#f2f2f2" />
         <KonvaLabels
           specs={[
-            { text: "MUX 4", x: 780, y: 25, width: 30, height: 90, align: "center", vAlign: "middle", bold: true },
+            { text: muxLabel(4), x: 780, y: 25, width: 30, height: 90, align: "center", vAlign: "middle", bold: true },
             { text: "Branch\n&\nisZero?", x: 760, y: 120, width: 70, height: 60, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" },
           ]}
         />
@@ -1129,7 +1142,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       {jump && !early && (
         <g transform={topMuxShift}>
           <rect x={840} y={25} width={30} height={90} rx={7.5} className="dp-box" fill="#f2f2f2" />
-          <KonvaLabel spec={{ text: "MUX 5", x: 840, y: 25, width: 30, height: 90, align: "center", vAlign: "middle", bold: true }} />
+          <KonvaLabel spec={{ text: muxLabel(5), x: 840, y: 25, width: 30, height: 90, align: "center", vAlign: "middle", bold: true }} />
           <CtrlTick x={855} y1={115} y2={125} />
           <KonvaLabel spec={{ text: "Jump", x: 825, y: 130, width: 60, height: 30, align: "center", vAlign: "middle", bold: true, fill: "#2c5aa0" }} />
         </g>

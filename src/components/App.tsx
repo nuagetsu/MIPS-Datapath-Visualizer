@@ -468,14 +468,10 @@ export function App() {
         op: line.prop.inst.prop.op,
         bin: line.prop.bin,
       }));
-      // Errors that used to wait until run time: .data too big for
-      // memory, and memory accesses whose address is already known.
-      checkProgram(
-        programLines,
-        assembled.map((line) => line.prop.loc),
-        data,
-        memBank.size,
-      );
+      // .data too big for memory: caught here, at its line, rather than
+      // inside initializeMemory() with no line. Bad lw/sw/lb/sb addresses
+      // are left to the test run below and to run time.
+      checkProgram(data, memBank.size);
       // Same index space as programLines above — line.prop.loc is
       // 1-indexed (PEG.js convention), Ace rows are 0-indexed.
       const sourceLines: number[] = assembled.map((line) => line.prop.loc - 1);
@@ -531,8 +527,13 @@ export function App() {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      consEditor.log(message);
       const loc = err instanceof CompileError ? err.loc : 0;
+      // staticCheck.ts's errors (comp "check") reuse the run-time message
+      // text, which has no line number in it, so name the line here, in the
+      // same form as the test-run errors above. mips-util's CompileErrors
+      // already name their line(s) in the message, so they're logged as is.
+      const fromStaticCheck = err instanceof CompileError && err.comp === "check" && loc > 0;
+      consEditor.log(fromStaticCheck ? `Error at line ${loc}: ${message}` : message);
       codeEditor.err(Math.max(0, loc - 1));
     }
   }, [codeEditor, dispEditor, consEditor, memBank, regBank, machine, showPipeline]);
