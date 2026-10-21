@@ -78,7 +78,7 @@ import { checkProgram, checkSource } from "../lib/mips-machine/staticCheck";
 import type { ProgramLine } from "../lib/mips-machine/interpreter";
 import type { CycleStage } from "../lib/mips-machine/machineState";
 import type { DataDecl, NumNode } from "../lib/mips-parser/ast";
-import "./theme.css";
+import "./Theme.css";
 import "./App.css";
 
 const DEFAULT_SOURCE = ` # Once you write your program, click assemble to run it
