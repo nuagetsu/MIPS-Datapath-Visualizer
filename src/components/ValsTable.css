@@ -3,7 +3,8 @@
   border-collapse: collapse;
   font-family: ui-monospace, Consolas, monospace;
   font-size: 13px;
-  background: #e0e0e0;
+  background: var(--tray);
+  color: var(--text);
 }
 
 .vals-table th,
@@ -15,7 +16,7 @@
 .vals-table thead {
   position: sticky;
   top: 0;
-  background: #e0e0e0;
+  background: var(--tray);
 }
 
 .val-name sup {
@@ -45,7 +46,7 @@
 .val-value input:read-only {
   background: transparent;
   border-color: transparent;
-  color: #666;
+  color: var(--readonly-text);
   cursor: default;
 }
 
@@ -62,12 +63,12 @@
 
 .base-toggle button.active {
   font-weight: bold;
-  background: var(--accent-bg, #eee);
+  background: var(--accent-bg);
 }
 
 /* Mark colors — matches RegisterTable.css's four states exactly, no
  * Bootstrap dependency. */
 .vals-row.mark-default { background: transparent; }
-.vals-row.mark-success { background: rgba(76, 175, 80, 0.15); }  /* read this cycle */
-.vals-row.mark-warning { background: rgba(255, 193, 7, 0.2); }   /* written this cycle */
-.vals-row.mark-danger  { background: rgba(244, 67, 54, 0.2); }   /* unused currently — no write in vals$ can fail */
+.vals-row.mark-success { background: var(--mark-success); }  /* read this cycle */
+.vals-row.mark-warning { background: var(--mark-warning); }  /* written this cycle */
+.vals-row.mark-danger  { background: var(--mark-danger); }   /* unused currently — no write in vals$ can fail */

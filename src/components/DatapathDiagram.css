@@ -10,7 +10,11 @@
  * SVG's own default `preserveAspectRatio="xMidYMid meet"` to scale the
  * *content* uniformly to fit inside that box — the SVG equivalent of
  * `object-fit: contain`. The outer element can be any aspect ratio; the
- * drawing inside it never distorts and never overflows either axis. */
+ * drawing inside it never distorts and never overflows either axis.
+ *
+ * Every colour in the drawing — text, strokes, wires, component fills and
+ * the five pipeline colours — is a theme.css custom property, so the whole
+ * diagram follows light/dark mode with no re-render. */
 .datapath-diagram {
   width: 100%;
   height: 100%;
@@ -23,56 +27,64 @@
 
 /* ---- Components ---- */
 .dp-box {
-  stroke: black;
+  stroke: var(--dp-stroke);
   stroke-width: 1;
 }
 .dp-box-thin {
-  stroke: black;
+  stroke: var(--dp-stroke);
   stroke-width: 1;
 }
 
+/* Component fills (were per-element fill attributes). Declared before the
+ * state classes below (.dp-pipeline-bar, .dp-held, .dp-flushing) so those
+ * win when both apply — same specificity, later rule wins. */
+.dp-fill-im { fill: var(--dp-fill-im); }       /* Instruction Memory */
+.dp-fill-pc { fill: var(--dp-fill-pc); }       /* PC */
+.dp-fill-rf { fill: var(--dp-fill-rf); }       /* Register File */
+.dp-fill-dm { fill: var(--dp-fill-dm); }       /* Data Memory */
+.dp-fill-unit { fill: var(--dp-fill-unit); }   /* muxes, ellipses, comparator */
+.dp-fill-plain { fill: var(--dp-fill-plain); } /* ALU, adders, instruction fields */
+
 /* Text labels are rendered by KonvaLabel with fontSize/fontWeight/
- * fontStyle/fill set directly as SVG presentation attributes per label
- * (mirroring each Konva.Text's own per-instance styling exactly) rather
- * than CSS classes — there's no fixed small set of "kinds" of label the
- * way there was for wires (default/active); each one's styling comes
- * straight from its TextSpec. */
+ * fontStyle set directly per label, and their colour as an inline
+ * `fill: var(--dp-text | --dp-title | --dp-ctrl)` style (see
+ * DatapathDiagram.tsx's LABEL_* constants). */
 
 .dp-value {
   font-size: 10px;
   font-weight: bold;
-  fill: #1a7a3c;
+  fill: var(--dp-value);
 }
 .dp-error {
   font-size: 12px;
   font-weight: bold;
-  fill: #c0392b;
+  fill: var(--dp-error);
 }
 
 .dp-ctrl-line {
-  stroke: #2c5aa0;
+  stroke: var(--dp-ctrl);
   stroke-width: 1;
 }
 
 /* ---- Wires ---- */
 .dp-wire {
   fill: none;
-  stroke: black;
+  stroke: var(--dp-wire);
   stroke-width: 2;
   transition: stroke 0.1s ease;
 }
 .dp-wire-active {
-  stroke: #d0342c;
+  stroke: var(--dp-wire-active);
   stroke-width: 2.5;
 }
 .dp-arrowhead {
-  fill: black;
+  fill: var(--dp-wire);
 }
 .dp-arrowhead-active {
-  fill: #d0342c;
+  fill: var(--dp-wire-active);
 }
 .dp-arrowhead-blue {
-  fill: #2c5aa0;
+  fill: var(--dp-ctrl);
 }
 
 /* ---- Forwarding wires (pipeline hazards mode) ----
@@ -82,7 +94,7 @@
  * the colour of the instruction whose result is being forwarded, and the
  * dashes flow toward the muxes. */
 .dp-fwd-wire {
-  stroke: #9a9a9a;
+  stroke: var(--dp-fwd);
   stroke-width: 1.75;
   stroke-dasharray: 5 4;
 }
@@ -96,11 +108,11 @@
   }
 }
 .dp-arrowhead-fwd {
-  fill: #9a9a9a;
+  fill: var(--dp-fwd);
 }
 /* Junctions where the forwarding wires leave their source wires. */
 .dp-fwd-tap {
-  fill: #9a9a9a;
+  fill: var(--dp-fwd);
 }
 
 /* ---- Pipeline registers (IF/ID, ID/EX, EX/MEM, MEM/WB) ----
@@ -108,21 +120,21 @@
  * widens from 900 to 1320 (PIPELINE_VIEW_WIDTH in datapathWires.ts) — the
  * sizing rules above already scale the drawing to fit either way. */
 .dp-pipeline-bar {
-  fill: #c9d3e0;
+  fill: var(--dp-fill-bar);
 }
 /* A load-use stall: PC and IF/ID are held (not written) this cycle. The
- * amber matches the Control table's hazard marks. (This overrides PC's own
- * fill attribute: presentation attributes lose to any CSS rule.) */
+ * amber matches the Control table's hazard marks. Comes after the fill
+ * classes above, so it overrides PC's own .dp-fill-pc. */
 .dp-held {
-  fill: #ffe08a;
-  stroke: #b8860b;
+  fill: var(--dp-held-fill);
+  stroke: var(--dp-held-stroke);
   stroke-width: 2;
 }
 /* A stall's bubble (nop), labelled in the stage it occupies. */
 .dp-bubble {
   font-size: 11px;
   font-style: italic;
-  fill: #8a8a8a;
+  fill: var(--dp-bubble);
 }
 /* ---- Control unit (pipeline mode) ----
  * The oval is always shown; its control lines and the WB/M/EX cells on the
@@ -137,16 +149,16 @@
   outline: none;
 }
 .dp-control-oval {
-  fill: #f2f2f2;
+  fill: var(--dp-fill-unit);
   cursor: help;
   transition: fill 0.15s ease;
 }
 .dp-control:hover .dp-control-oval,
 .dp-control:focus-visible .dp-control-oval {
-  fill: #dce6f4;
+  fill: var(--dp-ctrl-hover);
 }
 .dp-control:focus-visible .dp-control-oval {
-  stroke: #2c5aa0;
+  stroke: var(--dp-ctrl);
   stroke-width: 2;
 }
 .dp-control text {
@@ -189,20 +201,22 @@
   transition: opacity 0.12s ease var(--d);
 }
 
+/* The casing under each control line: the page background colour, so a
+ * line crossing a data wire reads as passing over it in either theme. */
 .dp-ctrl-halo {
-  stroke: white;
+  stroke: var(--dp-halo);
   stroke-width: 5;
 }
 .dp-ctrl-wire {
-  stroke: #2c5aa0;
+  stroke: var(--dp-ctrl);
   stroke-width: 1.5;
 }
 .dp-ctrl-arrowhead {
-  fill: #2c5aa0;
+  fill: var(--dp-ctrl);
 }
 .dp-ctrl-cell {
-  fill: #dce6f4;
-  stroke: #2c5aa0;
+  fill: var(--dp-ctrl-cell);
+  stroke: var(--dp-ctrl);
   stroke-width: 1;
 }
 
@@ -220,12 +234,12 @@
 /* ---- Early branches (pipeline hazards mode) ---- */
 /* Junctions where the early-branch wiring taps an existing wire. */
 .dp-junction {
-  fill: black;
+  fill: var(--dp-wire);
 }
 /* A taken branch or jump resolving in ID: IF/ID is zeroed at the end of the
  * cycle (IF.Flush), flushing the wrong-path instruction in IF. */
 .dp-flushing {
-  fill: #f6c1bd;
-  stroke: #c0392b;
+  fill: var(--dp-flush-fill);
+  stroke: var(--dp-flush-stroke);
   stroke-width: 2;
 }

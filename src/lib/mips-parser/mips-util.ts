@@ -26,27 +26,57 @@ const funct: Record<string, Int32Bits> = {
   xor: int32.hex("26"), nor: int32.hex("27"), slt: int32.hex("2A"), sll: int32.hex("00"), srl: int32.hex("02"),
 };
 
+// ---- Line references --------------------------------------------------------
+
+/**
+ * "line N (0xA)": a 1-indexed source line plus the address the code
+ * editor's gutter shows beside it (useAceEditor's pcNum gutter: row × 4,
+ * lowercase hex, no leading zeros — so line 1 is 0x0 and line 2 is 0x4).
+ * Every error message that names a line uses this, so the number can be
+ * matched against either the line count or the gutter.
+ *
+ * The gutter numbers every row, including comment, label-only and .data
+ * rows, so this is the gutter's address for the line rather than the
+ * instruction's address in memory.
+ */
+export function lineRef(line: number): string {
+  return `line ${line} (0x${(Math.max(0, line - 1) * 4).toString(16)})`;
+}
+
 // ---- Error constructors ---------------------------------------------------
+//
+// Messages say what's wrong but not *where*: each CompileError carries its
+// line in `loc`, and App's Assemble handler prints every error as
+// "Error at line N: <message>", the same form as syntax and run-time
+// errors. (They used to embed "at line N" mid-sentence, each in a slightly
+// different place.)
 
 function mips$InvalidData(lbl: string, loc: number) {
-  return new CompileError(`Invalid data "${lbl}" at line ${loc}`, "data", [lbl, loc], loc);
+  return new CompileError(`"la" refers to "${lbl}", but no .data label has that name`, "data", [lbl, loc], loc);
 }
 function mips$InvalidReg(inst: Instr, loc: number) {
   const dst = "dst" in inst.prop ? inst.prop.dst : undefined;
   return new CompileError(
-    `Invalid writing to ${dst?.prop.name} in "${strip(print$inst(inst))}" at line ${loc}`,
+    `"${strip(print$inst(inst))}" writes to ${dst?.prop.name}, which is read-only (always 0). Use another destination register, such as $t0`,
     inst.prop.op, [inst, loc], loc,
   );
 }
 function mips$DuplicateLabel(lbl: string, loc: number, curr: number) {
-  return new CompileError(`Duplicate label "${lbl}" at line ${loc} and line ${curr}`, "label", [lbl, loc, curr], curr);
+  return new CompileError(`Label "${lbl}" is already defined at ${lineRef(loc)}. Each label can only be used once`, "label", [lbl, loc, curr], curr);
 }
-function mips$UnknownLabel(lbl: string, loc: number) {
-  return new CompileError(`Unknown label "${lbl}" at line ${loc}`, "label", [lbl, loc], loc);
+function mips$UnknownLabel(lbl: string, loc: number, known: string[]) {
+  // Labels are case-sensitive (unlike mnemonics and registers), a common slip.
+  const sameButCase = known.find((k) => k.toLowerCase() === lbl.toLowerCase());
+  const hint = sameButCase
+    ? ` Labels are case-sensitive: did you mean "${sameButCase}"?`
+    : known.length > 0
+      ? ` Defined labels: ${known.join(", ")}`
+      : ` No labels are defined yet: add one, e.g. "${lbl}:" at the start of the target line`;
+  return new CompileError(`Unknown label "${lbl}".${hint}`, "label", [lbl, loc], loc);
 }
 function mips$OutOfRangeLabel(lbl: string, offset: number, loc: number, curr: number) {
   return new CompileError(
-    `Label "${lbl}" at line ${loc} is out of range with offset ${offset} from line ${curr}`,
+    `Label "${lbl}" (${lineRef(loc)}) is too far away: an offset of ${offset} instructions doesn't fit in the 16-bit branch offset`,
     "label", [lbl, offset, loc, curr], curr,
   );
 }
@@ -231,7 +261,7 @@ function check$valid_lbl(ast: TextLine[], lbl: Record<string, number>, loc: Reco
     switch (inst.prop.type) {
       case "B":
       case "J": {
-        if (lbl[inst.prop.lbl] === undefined) throw mips$UnknownLabel(inst.prop.lbl, ast[i].prop.loc);
+        if (lbl[inst.prop.lbl] === undefined) throw mips$UnknownLabel(inst.prop.lbl, ast[i].prop.loc, Object.keys(lbl));
         const offset = loc[inst.prop.lbl] - (i + 1);
         if (offset > 32767 || offset < -32768) {
           throw mips$OutOfRangeLabel(inst.prop.lbl, offset, lbl[inst.prop.lbl], ast[i].prop.loc);
@@ -498,4 +528,4 @@ function translate(ast: InstructionLine[]): AssembledLine[] {
   return ast.map((line) => ({ ...line, prop: { ...line.prop, bin: translate$inst(line.prop.inst) } }));
 }
 
-export default { print: print_asm, check, assemble, layoutData };
+export default { print: print_asm, check, assemble, layoutData, lineRef };

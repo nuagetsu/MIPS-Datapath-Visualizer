@@ -3,7 +3,8 @@
   border-collapse: collapse;
   font-family: ui-monospace, Consolas, monospace;
   font-size: 13px;
-  background: #e0e0e0;
+  background: var(--tray);
+  color: var(--text);
 }
 
 .register-table th,
@@ -15,7 +16,7 @@
 .register-table thead {
   position: sticky;
   top: 0;
-  background: #e0e0e0;
+  background: var(--tray);
 }
 
 .reg-name sup {
@@ -47,7 +48,7 @@
 .reg-value input:read-only {
   background: transparent;
   border-color: transparent;
-  color: #666;
+  color: var(--readonly-text);
   cursor: default;
 }
 
@@ -64,13 +65,13 @@
 
 .base-toggle button.active {
   font-weight: bold;
-  background: var(--accent-bg, #eee);
+  background: var(--accent-bg);
 }
 
 /* Mark colors — the four visual states RR()/WR()/RES()/trySave() cycle
  * through, replacing Bootstrap's table-success/warning/danger classes from
  * the original so this doesn't depend on Bootstrap being present. */
 .register-row.mark-default { background: transparent; }
-.register-row.mark-success { background: rgba(76, 175, 80, 0.15); }  /* read this cycle */
-.register-row.mark-warning { background: rgba(255, 193, 7, 0.2); }   /* written this cycle */
-.register-row.mark-danger  { background: rgba(244, 67, 54, 0.2); }   /* readonly write attempt or invalid input */
+.register-row.mark-success { background: var(--mark-success); }  /* read this cycle */
+.register-row.mark-warning { background: var(--mark-warning); }  /* written this cycle */
+.register-row.mark-danger  { background: var(--mark-danger); }   /* readonly write attempt or invalid input */

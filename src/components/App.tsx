@@ -27,7 +27,18 @@
  * registers, its memory (plus any word read or written while running) and
  * a Control column per instruction kind it uses. "Display all registers,
  * memory & control signals" turns that off. Each of the four tables can also be shown or
- * hidden on its own from the tray's toolbar.
+ * hidden from the tray's toolbar.
+ *
+ * Errors: every error the console shows — syntax (parser + diagnose.ts),
+ * assembly (mips-util / staticCheck), the test run on Assemble, and
+ * run-time errors while stepping — goes through formatProblems(), so each
+ * one reads "Error at line N (0xA): <what's wrong>" — 0xA being the
+ * address the editor gutter shows for that line — followed by the offending
+ * source line and, where there is one, a hint. A syntax pass can report
+ * several lines at once; all of them get a gutter marker.
+ *
+ * Theme: useTheme() switches light/dark (colours are CSS custom
+ * properties in theme.css; the Ace editors get the matching Ace theme).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AceEditorPanel } from "./AceEditorPanel";
@@ -37,6 +48,7 @@ import { useMemoryBank, type MemoryBank } from "../hooks/useMemoryBank";
 import { useCtrlBank } from "../hooks/useControlBank";
 import { useValsBank } from "../hooks/useValsBank";
 import { useMachineHistory } from "../hooks/useMachineHistory";
+import { useTheme } from "../hooks/useTheme";
 import { RegisterTable } from "./RegisterTable";
 import { MemoryTable } from "./MemoryTable";
 import { ValsTable } from "./ValsTable";
@@ -44,7 +56,7 @@ import { ControlTable, type ForwardingRowsData } from "./ControlTable";
 import { DatapathDiagram, PIPELINE_WIRE_COLOURS } from "./DatapathDiagram";
 import { Scrubber } from "./Scrubber";
 import { parseMips } from "../lib/mips-parser";
-import mipsUtil, { check, assemble } from "../lib/mips-parser/mips-util";
+import mipsUtil, { check, assemble, lineRef } from "../lib/mips-parser/mips-util";
 import { int32 } from "../lib/Numbers/int32";
 import { CompileError } from "../lib/Numbers/err";
 import { isKnownOp } from "../lib/mips-machine/ctrl";
@@ -66,9 +78,11 @@ import { checkProgram, checkSource } from "../lib/mips-machine/staticCheck";
 import type { ProgramLine } from "../lib/mips-machine/interpreter";
 import type { CycleStage } from "../lib/mips-machine/machineState";
 import type { DataDecl, NumNode } from "../lib/mips-parser/ast";
+import "./theme.css";
 import "./App.css";
 
-const DEFAULT_SOURCE = `addi $v1, $zero, 100
+const DEFAULT_SOURCE = ` # Once you write your program, click assemble to run it
+addi $v1, $zero, 100
 add $v0, $zero, $v1
 `;
 
@@ -106,6 +120,39 @@ const TRAY_TABLES: { key: TrayTable; label: string; title: string }[] = [
 function regName(num: number): string {
   const name = REGISTERS.find((r) => r.num === num)?.name;
   return name ? `$${name}` : `$${num}`;
+}
+
+// ---- Error reporting --------------------------------------------------------
+
+/** One problem to report: a 1-indexed source line (0 = no line known), what's
+ * wrong, and optionally how to fix it. */
+interface Problem {
+  line: number;
+  message: string;
+  hint?: string;
+}
+
+/**
+ * Console text for a list of problems: a heading when there's more than
+ * one, then for each "Error at line N (0xA): message" (lineRef: the line
+ * number and the editor gutter's address for it), the source line itself
+ * (so the line number can be matched up without counting), and the hint.
+ */
+function formatProblems(problems: Problem[], source: string, opts: { kind?: string; more?: number } = {}): string[] {
+  const kind = opts.kind ?? "Error";
+  const srcLines = source.split(/\r\n|\r|\n/);
+  const out: string[] = [];
+  const total = problems.length + (opts.more ?? 0);
+  if (total > 1) out.push(`Assembly failed: ${total} problems found.`, "");
+  problems.forEach((p, i) => {
+    out.push(p.line > 0 ? `${kind} at ${lineRef(p.line)}: ${p.message}` : `${kind}: ${p.message}`);
+    const text = p.line > 0 ? srcLines[p.line - 1] : undefined;
+    if (text !== undefined && text.trim() !== "") out.push(`    ${p.line} | ${text.trim()}`);
+    if (p.hint) out.push(`    Hint: ${p.hint}`);
+    if (i < problems.length - 1) out.push("");
+  });
+  if (opts.more) out.push("", `…and ${opts.more} more. Fix these and press Assemble again to see the rest.`);
+  return out;
 }
 
 /** The pipeline register zeroed to flush an instruction in each stage. */
@@ -266,6 +313,7 @@ function initializeMemory(data: DataDecl[] | null, memBank: MemoryBank): void {
 }
 
 export function App() {
+  const { theme, toggle: toggleTheme, aceTheme } = useTheme();
   const [codeEditor, setCodeEditor] = useState<AceEditorHandle | null>(null);
   const [tablesCollapsed, setTablesCollapsed] = useState(false);
   // Presentation-only toggles for the datapath diagram's shift/jump
@@ -324,8 +372,8 @@ export function App() {
 
   const dispContainerRef = useRef<HTMLDivElement>(null);
   const consContainerRef = useRef<HTMLDivElement>(null);
-  const dispEditor = useAceEditor(dispContainerRef, { mode: "ace/mode/mips", pcNum: true, write: false });
-  const consEditor = useAceEditor(consContainerRef, { mode: "ace/mode/text", write: false, number: false });
+  const dispEditor = useAceEditor(dispContainerRef, { mode: "ace/mode/mips", pcNum: true, write: false, theme: aceTheme });
+  const consEditor = useAceEditor(consContainerRef, { mode: "ace/mode/text", write: false, number: false, theme: aceTheme });
 
   const [program, setProgram] = useState<ProgramLine[]>([]);
   // keep track of line numbers disregarding labels
@@ -451,10 +499,16 @@ export function App() {
     consEditor.load("");
     showingRunErrorRef.current = false;
 
-    const result = parseMips(codeEditor.value());
+    const source = codeEditor.value();
+    // Logs problems to the console and marks each line in the editor.
+    const report = (problems: Problem[], opts?: { kind?: string; more?: number }) => {
+      for (const text of formatProblems(problems, source, opts)) consEditor.log(text);
+      codeEditor.err(problems.filter((p) => p.line > 0).map((p) => p.line - 1));
+    };
+
+    const result = parseMips(source);
     if (!result.ok) {
-      consEditor.log(result.message);
-      codeEditor.err(Math.max(0, result.line - 1));
+      report(result.diagnostics, { more: result.more });
       return;
     }
 
@@ -500,13 +554,16 @@ export function App() {
         },
       );
       if (runError) {
-        const line = sourceLines[runError.pc] ?? 0;
-        consEditor.log(`Error at line ${line + 1}: ${runError.message}`);
-        consEditor.log(
-          `Found by test-running the program ${resume ? "from where it stopped" : "from the current register and memory values"} ` +
-            `before assembling. Fix the line and press Assemble again.`,
-        );
-        codeEditor.err(line);
+        const line = sourceLines[runError.pc] ?? -1;
+        report([
+          {
+            line: line + 1,
+            message: runError.message,
+            hint:
+              `Found by test-running the program ${resume ? "from where it stopped" : "from the current register and memory values"} ` +
+              `before assembling. Fix the line and press Assemble again.`,
+          },
+        ], { kind: "Run-time error" });
         return;
       }
 
@@ -519,22 +576,21 @@ export function App() {
       setProgramRefs(refs);
       if (resume) {
         consEditor.log(
-          `Fixed line ${sourceLines[resume.pc] + 1}: resuming just before it runs ` +
+          `Fixed ${lineRef(sourceLines[resume.pc] + 1)}: resuming just before it runs ` +
             `(${showPipeline ? "cycle" : "step"} ${resume.frame}). Earlier steps are kept.`,
         );
       } else {
         setTouchedMemory(new Set());
+        consEditor.log(`Assembled ${programLines.length} instruction${programLines.length === 1 ? "" : "s"} with no errors.`);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // Every CompileError (mips-util's assembler checks and staticCheck's)
+      // carries its source line in `loc` and leaves the line number out of
+      // its message, so all of them print in the same "Error at line N"
+      // form. Anything else has no line.
       const loc = err instanceof CompileError ? err.loc : 0;
-      // staticCheck.ts's errors (comp "check") reuse the run-time message
-      // text, which has no line number in it, so name the line here, in the
-      // same form as the test-run errors above. mips-util's CompileErrors
-      // already name their line(s) in the message, so they're logged as is.
-      const fromStaticCheck = err instanceof CompileError && err.comp === "check" && loc > 0;
-      consEditor.log(fromStaticCheck ? `Error at line ${loc}: ${message}` : message);
-      codeEditor.err(Math.max(0, loc - 1));
+      report([{ line: loc, message }]);
     }
   }, [codeEditor, dispEditor, consEditor, memBank, regBank, machine, showPipeline]);
 
@@ -619,11 +675,18 @@ export function App() {
       // Shown fresh each time this step comes on screen (it may be visited
       // many times while scrubbing), rather than appended.
       consEditor.load("");
-      consEditor.log(state.error);
-      consEditor.log(
-        `Fix line ${editorLine + 1} (without changing any other instruction or the .data) and ` +
-          `press Assemble to resume from here.`,
+      const lines = formatProblems(
+        [
+          {
+            line: editorLine + 1,
+            message: state.error,
+            hint: `Fix this line (without changing any other instruction or the .data) and press Assemble to resume from here.`,
+          },
+        ],
+        codeEditor.value(),
+        { kind: "Run-time error" },
       );
+      for (const text of lines) consEditor.log(text);
       codeEditor.err(editorLine);
       showingRunErrorRef.current = true;
       setPlaying(false);
@@ -661,11 +724,24 @@ export function App() {
   }, [codeEditor]);
 
   const noTablesShown = TRAY_TABLES.every(({ key }) => !visibleTables[key]);
+  const dark = theme === "dark";
 
   return (
     <div className="app">
       <header className="app-toolbar">
         <h1>MIPS Datapath Simulator</h1>
+        <button
+          type="button"
+          className="app-theme-toggle"
+          onClick={toggleTheme}
+          aria-pressed={dark}
+          title={dark ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          <span className="app-theme-toggle-icon" aria-hidden="true">
+            {dark ? "☀" : "☾"}
+          </span>
+          {dark ? "Light mode" : "Dark mode"}
+        </button>
         <div className="app-toolbar-controls">
           <button onClick={handleParse}>Assemble</button>
           <button onClick={handleStepBack} disabled={!machine.canStepBack} title="One step back">
@@ -741,7 +817,7 @@ export function App() {
 
       <main className={tablesCollapsed ? "app-main app-main-tables-collapsed" : "app-main"}>
         <section className="app-editors">
-          <AceEditorPanel onReady={setCodeEditor} />
+          <AceEditorPanel onReady={setCodeEditor} theme={aceTheme} />
           <div className="app-editor-panel">
             <div className="app-editor-label">Assembled</div>
             <div ref={dispContainerRef} className="app-editor-container" />

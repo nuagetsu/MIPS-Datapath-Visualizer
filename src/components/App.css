@@ -3,13 +3,17 @@
  * (an <svg viewBox>, see DatapathDiagram.css) drops into it inside
  * .app-diagram-wrap — a single grid item (that wrapper, not the diagram
  * directly, since it also holds the "Toggles:" bar above it) that scales
- * itself. Nothing here computes pixel positions in JS. */
+ * itself. Nothing here computes pixel positions in JS.
+ *
+ * Colours come from theme.css's custom properties (light/dark). */
 
 .app {
   display: flex;
   flex-direction: column;
   height: 100vh;
   font-family: system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .app-toolbar {
@@ -17,7 +21,7 @@
   align-items: center;
   gap: 24px;
   padding: 8px 16px;
-  border-bottom: 1px solid #ddd;
+  border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
 
@@ -44,7 +48,36 @@
 .app-stage-indicator {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12px;
-  color: #555;
+  color: var(--text-muted);
+}
+
+/* Light/dark switch, between the title and the Assemble button. */
+.app-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--chip-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.app-theme-toggle:hover {
+  background: var(--panel-hover);
+}
+
+.app-theme-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.app-theme-toggle-icon {
+  font-size: 14px;
+  line-height: 1;
 }
 
 .app-feedback-group {
@@ -58,7 +91,7 @@
 
 .app-feedback-link-label {
   padding: 6px 12px;
-  color: #ce3636;
+  color: var(--link-alert);
   font-size: 12px;
   font-weight: 600;
   text-decoration: none;
@@ -67,10 +100,10 @@
 
 .app-feedback-link {
   padding: 6px 12px;
-  border: 1px solid #bbb;
+  border: 1px solid var(--scrub-border);
   border-radius: 4px;
-  background: #f4f3ec;
-  color: #333;
+  background: var(--panel);
+  color: var(--chip-text);
   font-size: 12px;
   font-weight: 600;
   text-decoration: none;
@@ -79,8 +112,8 @@
 }
 
 .app-feedback-link:hover {
-  background: #e8e6da;
-  border-color: #999;
+  background: var(--panel-hover);
+  border-color: var(--rule);
 }
 
 /* Three-column layout: editors | diagram | tables. Each column is its own
@@ -129,8 +162,8 @@
   min-width: 0;
   min-height: 0;
   overflow: visible;
-  background: #e0e0e0;
-  border: 1px solid #ddd;
+  background: var(--tray);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 12px;
   /* Small inset from the grid column's left edge — the tray's actual
@@ -175,21 +208,21 @@
   justify-content: center;
   gap: 2px;
   border: none;
-  background: #e0e0e0;
+  background: var(--tray);
   cursor: pointer;
   padding: 0;
   z-index: 1;
 }
 
 .app-tables-handle:hover {
-  background: #cac8be;
+  background: var(--tray-handle-hover);
 }
 
 .app-tables-handle-bar {
   width: 2px;
   height: 25px;
   border-radius: 1px;
-  background: #7c7c7c;
+  background: var(--handle-bar);
 }
 
 .app-tables-tray .app-tables {
@@ -224,8 +257,8 @@
   flex-direction: column;
   gap: 6px;
   padding: 8px;
-  background: #f4f3ec;
-  border: 1px solid #ccc;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
   font-size: 12px;
   flex-shrink: 0;
@@ -246,26 +279,26 @@
 .app-tables-chip {
   font-size: 12px;
   padding: 3px 10px;
-  border: 1px solid #ccc;
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  background: white;
-  color: #333;
+  background: var(--chip-bg);
+  color: var(--chip-text);
   cursor: pointer;
 }
 
 .app-tables-chip:hover {
-  background: #e8e6da;
+  background: var(--panel-hover);
 }
 
 /* Same "control signal is live" blue as the diagram toggles. */
 .app-tables-chip-on {
-  background: #2c5aa0;
-  border-color: #2c5aa0;
-  color: white;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
 }
 
 .app-tables-chip-on:hover {
-  background: #244b87;
+  background: var(--accent-hover);
 }
 
 .app-tables-showall {
@@ -281,7 +314,7 @@
 .app-tables-filter-note,
 .table-empty-note {
   font-size: 11px;
-  color: #666;
+  color: var(--text-faint);
   font-style: italic;
 }
 
@@ -321,8 +354,8 @@
   gap: 8px;
   padding: 6px 10px;
   margin: 0 0 4px;
-  background: #f4f3ec;
-  border: 1px solid #ddd;
+  background: var(--panel);
+  border: 1px solid var(--border);
   /* No top border: the header's own bottom border is the bar's top edge. */
   border-top: none;
   border-radius: 0 0 4px 4px;
@@ -332,7 +365,7 @@
 .app-diagram-toolbar-label {
   font-size: 12px;
   font-weight: 600;
-  color: #333;
+  color: var(--chip-text);
   margin-right: 2px;
   white-space: nowrap;
 }
@@ -341,31 +374,31 @@
   font-size: 12px;
   line-height: 1.4;
   padding: 4px 10px;
-  border: 1px solid #ccc;
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
-  /* White when off, so it stands out against the beige bar. */
-  background: white;
-  color: #333;
+  /* White (light) / raised grey (dark) when off, so it stands out against the bar. */
+  background: var(--chip-bg);
+  color: var(--chip-text);
   cursor: pointer;
   white-space: nowrap;
 }
 
 .app-diagram-toggle:hover {
-  background: #e8e6da;
+  background: var(--panel-hover);
 }
 
 /* "On" state uses the same blue every control-signal label in the
- * diagram itself uses (#2c5aa0 — RegDst/Branch/ALUctrl/etc.), so a
- * pressed toggle visually reads as "this control signal is live" rather
- * than as an unrelated UI color. */
+ * diagram itself uses (RegDst/Branch/ALUctrl/etc.), so a pressed toggle
+ * visually reads as "this control signal is live" rather than as an
+ * unrelated UI color. */
 .app-diagram-toggle-on {
-  background: #2c5aa0;
-  border-color: #2c5aa0;
-  color: white;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
 }
 
 .app-diagram-toggle-on:hover {
-  background: #244b87;
+  background: var(--accent-hover);
 }
 
 .app-diagram {
@@ -395,7 +428,7 @@
 .app-editor-panel {
   display: flex;
   flex-direction: column;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -406,16 +439,18 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 4px 8px;
-  background: #f4f3ec;
-  border-bottom: 1px solid #ddd;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
 }
 
 .app-editor-container {
   height: 140px;
 }
 
+/* Taller than before: error reports now list every problem with its line,
+ * the source line and a hint, so they need the room. */
 .app-editor-panel-console .app-editor-container {
-  height: 100px;
+  height: 140px;
 }
 
 /* Narrow viewports: stack everything in one column instead of squeezing
@@ -447,7 +482,7 @@
     /* Stacked at the bottom here, not under the header: normal spacing and
      * a full border again. */
     margin-top: 0;
-    border-top: 1px solid #ddd;
+    border-top: 1px solid var(--border);
     border-radius: 4px;
   }
   .app-tables-handle {
@@ -480,7 +515,7 @@
     margin-top: 0;
   }
   .app-diagram-toolbar {
-    border-top: 1px solid #ddd;
+    border-top: 1px solid var(--border);
     border-radius: 4px;
   }
 }

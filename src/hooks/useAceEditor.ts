@@ -18,11 +18,17 @@
  *   - markColours([...]) -> several coloured gutter dots at once (pipeline
  *                     mode: one per instruction in flight, in its colour)
  *   - next(line)   -> full-line marker ("next line to execute")
- *   - err(line)    -> reuses Ace's breakpoint mechanism for error highlight
+ *   - err(line)    -> reuses Ace's breakpoint mechanism for error highlight;
+ *                     also accepts an array, to mark every line an
+ *                     Assemble found a problem on
  *   - reset()      -> clears mark/next/err (was RES() in the original)
  *   - read-only mode snaps the cursor/selection back to the marked line
  *   - gutter click toggles a breakpoint (tracked in a ref, mirroring `brkpts`)
  *   - pcNum mode replaces line numbers with word-aligned hex addresses
+ *
+ * Theme: `theme` is live — changing it (useTheme's aceTheme, light/dark)
+ * re-themes the mounted editor without recreating it. Both theme modules
+ * are imported below so either can be switched to instantly.
  *
  * Deliberately NOT ported forward:
  *   - `p_err` / `p_next` bookkeeping vars — dead in the original, no reader.
@@ -39,6 +45,7 @@ import ace from "../lib/ace-core";
 import type { Ace } from "ace-builds";
 import "ace-builds/src-noconflict/mode-mips";
 import "ace-builds/src-noconflict/theme-chrome";
+import "ace-builds/src-noconflict/theme-tomorrow_night";
 import "../types/ace-augment.d.ts";
 import { int32 } from "../lib/Numbers/int32";
 
@@ -88,7 +95,8 @@ export interface AceEditorOptions {
   mode?: string;
   /** CSS font-size string, e.g. "10pt". Default: "10pt". */
   size?: string;
-  /** Ace theme id, e.g. "ace/theme/chrome". Default: "ace/theme/chrome". */
+  /** Ace theme id, e.g. "ace/theme/chrome". Default: "ace/theme/chrome".
+   * Must be one of the theme modules imported above. */
   theme?: string;
   /** Whether the editor is user-editable. Default: true. */
   write?: boolean;
@@ -119,7 +127,10 @@ export interface AceEditorHandle {
    * order given. Independent of mark()'s single red dot. */
   markColours: (marks: { line: number; colour: string }[]) => void;
   next: (line: number) => void;
-  err: (line: number) => void;
+  /** Error marker(s), replacing any previous ones: one 0-indexed line, or
+   * several. A negative line (or []) clears them. The first line given is
+   * scrolled into view. */
+  err: (line: number | number[]) => void;
   reset: () => void;
 }
 
@@ -144,7 +155,8 @@ const DEFAULT_BREAKPOINT_CLASS = "ace_breakpoint";
  * combination, into one shared <style> element, rather than hard-coded in
  * CSS: callers pass whatever colours they use (e.g. DatapathDiagram's
  * PIPELINE_WIRE_COLOURS), so there's no second copy of a palette to keep
- * in sync.
+ * in sync. Colours may be CSS var() references (they are, for the
+ * pipeline palette), which the generated rule resolves per theme.
  */
 const DOT = 8;
 const DOT_STEP = 5;
@@ -182,7 +194,10 @@ export function useAceEditor(
   containerRef: React.RefObject<HTMLDivElement | null>,
   opt: AceEditorOptions = {}
 ): AceEditorHandle | null {
-  const options = { ...DEFAULTS, ...opt };
+  // Skip options passed as undefined (e.g. `theme={undefined}`), so they
+  // fall back to the default instead of overriding it with undefined.
+  const defined = Object.fromEntries(Object.entries(opt).filter(([, v]) => v !== undefined)) as AceEditorOptions;
+  const options = { ...DEFAULTS, ...defined };
   const [handle, setHandle] = useState<AceEditorHandle | null>(null);
 
   // Mutable per-instance state, equivalent to the original's closure vars.
@@ -331,11 +346,11 @@ export function useAceEditor(
       }
     };
 
-    const err = (line: number) => {
+    const err = (line: number | number[]) => {
       session.clearBreakpoints();
-      if (line >= 0) {
-        session.setBreakpoint(line, DEFAULT_BREAKPOINT_CLASS);
-      }
+      const lines = (Array.isArray(line) ? line : [line]).filter((l) => l >= 0);
+      for (const l of lines) session.setBreakpoint(l, DEFAULT_BREAKPOINT_CLASS);
+      if (lines.length > 0) editor.scrollToLine(lines[0], true, true, () => {});
     };
 
     const reset = () => {
@@ -363,7 +378,8 @@ export function useAceEditor(
 
   // Keep a live editor in sync if options change after mount, without
   // tearing the whole editor down (mirrors calling init() again for the
-  // parts that are cheap to re-apply).
+  // parts that are cheap to re-apply). This is what makes the light/dark
+  // switch re-theme the editors in place.
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;

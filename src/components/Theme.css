@@ -1,0 +1,195 @@
+/* Colour tokens for the whole app, light and dark.
+ *
+ * Every stylesheet (and the datapath diagram's SVG) reads its colours from
+ * these custom properties instead of hard-coding them, so switching theme is
+ * just a change of <html data-theme="light|dark"> — set by useTheme.ts (and
+ * by the inline script in index.html before first paint, so a dark-mode
+ * user never sees a white flash).
+ *
+ * Dark values were picked for legibility on the dark background, not
+ * inverted mechanically: text is ~#e6e6e6 on ~#16181d (well above WCAG AA),
+ * wires are a light grey that still reads as "inactive" next to the lit
+ * colours, and the five pipeline colours are brightened so each stays
+ * distinct from the others and from the background. */
+
+:root {
+  color-scheme: light;
+
+  /* ---- Page chrome ---- */
+  --bg: #ffffff;
+  --text: #1f1f1f;
+  --text-muted: #555555;
+  --text-faint: #666666;
+  --border: #dddddd;
+  --border-strong: #cccccc;
+  --panel: #f4f3ec;
+  --panel-hover: #e8e6da;
+  --tray: #e0e0e0;
+  --tray-handle-hover: #cac8be;
+  --handle-bar: #7c7c7c;
+  --chip-bg: #ffffff;
+  --chip-text: #333333;
+  --accent: #2c5aa0;
+  --accent-hover: #244b87;
+  --accent-text: #ffffff;
+  --link-alert: #ce3636;
+  --focus-ring: #2c5aa0;
+
+  /* Tables: row/cell marks and the hazard note */
+  --mark-success: rgba(76, 175, 80, 0.15);
+  --mark-warning: rgba(255, 193, 7, 0.2);
+  --mark-danger: rgba(244, 67, 54, 0.2);
+  --readonly-text: #666666;
+  --note-info-text: #1d3f73;
+  --note-info-bg: #dce6f4;
+  --note-warning-text: #6b4e00;
+  --rule: #999999;
+
+  /* Scrubber */
+  --scrub-track: #ece9dc;
+  --scrub-border: #bbbbbb;
+  --scrub-label: #333333;
+  --scrub-mix: #ffffff;
+  --scrub-divider: rgba(0, 0, 0, 0.28);
+  --scrub-tick: rgba(0, 0, 0, 0.14);
+  --scrub-unplayed: rgba(255, 255, 255, 0.5);
+  --scrub-error-bg: #f6d4d0;
+  --scrub-error-stripe: rgba(192, 57, 43, 0.25);
+  --scrub-cursor-bg: rgba(44, 90, 160, 0.3);
+
+  /* Ace editor gutter marks */
+  --ace-current-dot: #d32f2f;
+  --ace-next-line: rgba(255, 235, 59, 0.35);
+
+  /* Instruction reference dialog (InfoPanel.css already reads these) */
+  --code-bg: #ffffff;
+  --text-color: #212529;
+  --border-color: #dee2e6;
+  --accent-bg: #eeeeee;
+  --dialog-button: #6c757d;
+  --dialog-button-hover: #5a6268;
+
+  /* ---- Datapath diagram ---- */
+  --dp-text: #000000;
+  --dp-stroke: #000000;
+  --dp-wire: #000000;
+  --dp-wire-active: #d0342c;
+  --dp-title: #c0392b;
+  --dp-ctrl: #2c5aa0;
+  --dp-value: #1a7a3c;
+  --dp-error: #c0392b;
+  --dp-fill-im: #e8e5bb;
+  --dp-fill-pc: #d7dce2;
+  --dp-fill-rf: #ffffcc;
+  --dp-fill-dm: #e1ffc4;
+  --dp-fill-unit: #f2f2f2;
+  --dp-fill-plain: #ffffff;
+  --dp-fill-bar: #c9d3e0;
+  --dp-fwd: #9a9a9a;
+  --dp-held-fill: #ffe08a;
+  --dp-held-stroke: #b8860b;
+  --dp-flush-fill: #f6c1bd;
+  --dp-flush-stroke: #c0392b;
+  --dp-bubble: #8a8a8a;
+  --dp-ctrl-hover: #dce6f4;
+  --dp-ctrl-cell: #dce6f4;
+  --dp-halo: #ffffff;
+
+  /* Pipeline instruction colours (wires, editor dots, scrubber, stage line) */
+  --pipe-0: #d0342c;
+  --pipe-1: #1f6fd6;
+  --pipe-2: #1e9e46;
+  --pipe-3: #e67e00;
+  --pipe-4: #8e44ad;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #16181d;
+  --text: #e6e6e6;
+  --text-muted: #a8adb7;
+  --text-faint: #9097a3;
+  --border: #343944;
+  --border-strong: #4a505c;
+  --panel: #20242c;
+  --panel-hover: #2b303a;
+  --tray: #1b1e24;
+  --tray-handle-hover: #2f3440;
+  --handle-bar: #8a909c;
+  --chip-bg: #262a33;
+  --chip-text: #e6e6e6;
+  --accent: #3b6fc0;
+  --accent-hover: #3462ab;
+  --accent-text: #ffffff;
+  --link-alert: #ff7b6b;
+  --focus-ring: #7fb0ff;
+
+  --mark-success: rgba(76, 175, 80, 0.26);
+  --mark-warning: rgba(255, 193, 7, 0.22);
+  --mark-danger: rgba(244, 67, 54, 0.32);
+  --readonly-text: #9aa1ad;
+  --note-info-text: #c3d6f5;
+  --note-info-bg: #1f2f49;
+  --note-warning-text: #f3d27a;
+  --rule: #5c6370;
+
+  --scrub-track: #23272f;
+  --scrub-border: #4a505c;
+  --scrub-label: #e6e6e6;
+  --scrub-mix: #16181d;
+  --scrub-divider: rgba(255, 255, 255, 0.22);
+  --scrub-tick: rgba(255, 255, 255, 0.14);
+  --scrub-unplayed: rgba(22, 24, 29, 0.55);
+  --scrub-error-bg: #4a2420;
+  --scrub-error-stripe: rgba(255, 123, 107, 0.3);
+  --scrub-cursor-bg: rgba(127, 176, 255, 0.3);
+
+  --ace-current-dot: #ff6b5e;
+  --ace-next-line: rgba(255, 213, 79, 0.2);
+
+  --code-bg: #1f2329;
+  --text-color: #e6e6e6;
+  --border-color: #343944;
+  --accent-bg: #2b303a;
+  --dialog-button: #4a505c;
+  --dialog-button-hover: #5c6370;
+
+  --dp-text: #e6e6e6;
+  --dp-stroke: #c9ccd3;
+  --dp-wire: #b9bdc6;
+  --dp-wire-active: #ff6b5e;
+  --dp-title: #ff8a7a;
+  --dp-ctrl: #7fb0ff;
+  --dp-value: #6fd08f;
+  --dp-error: #ff7b6b;
+  --dp-fill-im: #3a3720;
+  --dp-fill-pc: #2f3540;
+  --dp-fill-rf: #38361c;
+  --dp-fill-dm: #22381c;
+  --dp-fill-unit: #2a2e36;
+  --dp-fill-plain: #1f2329;
+  --dp-fill-bar: #34445c;
+  --dp-fwd: #6f7682;
+  --dp-held-fill: #6b5310;
+  --dp-held-stroke: #e0b23c;
+  --dp-flush-fill: #5a2622;
+  --dp-flush-stroke: #ff7b6b;
+  --dp-bubble: #8d939e;
+  --dp-ctrl-hover: #2a3a55;
+  --dp-ctrl-cell: #24344f;
+  --dp-halo: #16181d;
+
+  --pipe-0: #ff6b5e;
+  --pipe-1: #5aa2ff;
+  --pipe-2: #4cd07a;
+  --pipe-3: #ffa940;
+  --pipe-4: #c38bef;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}

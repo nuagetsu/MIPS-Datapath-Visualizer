@@ -12,6 +12,10 @@
  * the same colour its instruction gets in pipeline mode. Pipeline mode: one
  * segment per clock cycle, coloured by the instruction fetched that cycle.
  *
+ * Segment tints mix the instruction's colour with the track background
+ * (--scrub-mix: white in light mode, near-black in dark), so they read as
+ * pale tints in one theme and deep tints in the other.
+ *
  * Purely presentational: the timeline itself (and what seeking does to the
  * machine) lives in useMachineHistory.
  */
@@ -279,9 +283,9 @@ export function Scrubber({ timeline, position, pipeline, complete, onSeek }: Scr
                   title={seg.title}
                   style={{
                     flexGrow: seg.length,
-                    backgroundColor: seg.colour ? `color-mix(in srgb, ${seg.colour} 28%, white)` : undefined,
+                    backgroundColor: seg.colour ? `color-mix(in srgb, ${seg.colour} 28%, var(--scrub-mix))` : undefined,
                     backgroundImage: showTicks
-                      ? "linear-gradient(to right, rgba(0, 0, 0, 0.14) 1px, transparent 1px)"
+                      ? "linear-gradient(to right, var(--scrub-tick) 1px, transparent 1px)"
                       : undefined,
                     backgroundSize: showTicks ? `${100 / seg.length}% 100%` : undefined,
                   }}

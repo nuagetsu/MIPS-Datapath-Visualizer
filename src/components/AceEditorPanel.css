@@ -22,8 +22,7 @@
 /*
  * Gutter decoration for mark(line) — the "currently executing" line.
  * Ace applies this as a class on the .ace_gutter-cell for that row.
- * Adjust the color/marker to match your app's existing visual language;
- * this reproduces a simple colored dot in the gutter.
+ * Colour comes from theme.css (brighter in dark mode).
  */
 .ace_gutter-cell.RD::before {
   content: "";
@@ -31,7 +30,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #d32f2f;
+  background: var(--ace-current-dot);
   margin-right: 4px;
 }
 
@@ -41,5 +40,5 @@
  */
 .ace_marker-layer .WR {
   position: absolute;
-  background: rgba(255, 235, 59, 0.35);
+  background: var(--ace-next-line);
 }

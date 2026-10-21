@@ -2,30 +2,34 @@ import { InfoPanel } from "./InfoPanel";
 import React, { useRef, useState } from "react";
 import { useAceEditor } from "../hooks/useAceEditor";
 import "./AceEditorPanel.css";
- 
+
 interface AceEditorPanelProps {
   /** Called with the handle once the editor mounts, so a parent (e.g. the
    * simulator's run/step controller) can call mark()/next()/err() during
    * execution. */
   onReady?: (handle: ReturnType<typeof useAceEditor>) => void;
+  /** Ace theme id (light/dark — see useTheme's aceTheme). Changing it
+   * re-themes the editor in place. */
+  theme?: string;
 }
- 
-export function AceEditorPanel({ onReady }: AceEditorPanelProps) {
+
+export function AceEditorPanel({ onReady, theme }: AceEditorPanelProps) {
   const [infoOpen, setInfoOpen] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
- 
+
   const editor = useAceEditor(containerRef, {
     mode: "ace/mode/mips",
     pcNum: true,
     write: true,
+    theme,
   });
- 
+
   React.useEffect(() => {
     if (editor) onReady?.(editor);
   }, [editor, onReady]);
- 
+
   return (
     <div className="ace-editor-panel">
       {/* This div is what Ace mounts into; it replaces the original's

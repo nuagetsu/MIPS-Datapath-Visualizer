@@ -3,6 +3,7 @@
   border-collapse: collapse;
   font-family: ui-monospace, Consolas, monospace;
   font-size: 13px;
+  color: var(--text);
 }
 
 .memory-table th,
@@ -14,7 +15,7 @@
 .memory-table thead {
   position: sticky;
   top: 0;
-  background: var(--code-bg, #e0e0e0);
+  background: var(--tray);
 }
 
 .mem-value {
@@ -47,10 +48,10 @@
 
 .base-toggle button.active {
   font-weight: bold;
-  background: var(--accent-bg, #eee);
+  background: var(--accent-bg);
 }
 
 .memory-row.mark-default { background: transparent; }
-.memory-row.mark-success { background: rgba(76, 175, 80, 0.15); }
-.memory-row.mark-warning { background: rgba(255, 193, 7, 0.2); }
-.memory-row.mark-danger  { background: rgba(244, 67, 54, 0.2); }
+.memory-row.mark-success { background: var(--mark-success); }
+.memory-row.mark-warning { background: var(--mark-warning); }
+.memory-row.mark-danger  { background: var(--mark-danger); }

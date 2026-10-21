@@ -3,7 +3,8 @@
   border-collapse: collapse;
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12px;
-  background: #e0e0e0;
+  background: var(--tray);
+  color: var(--text);
 }
 
 .control-table th,
@@ -16,7 +17,7 @@
 .control-table thead {
   position: sticky;
   top: 0;
-  background: #e0e0e0;
+  background: var(--tray);
 }
 
 .ctrl-corner,
@@ -24,7 +25,7 @@
   text-align: left;
   position: sticky;
   left: 0;
-  background: #e0e0e0;
+  background: var(--tray);
 }
 
 .ctrl-cell input {
@@ -44,7 +45,7 @@
 .ctrl-cell input:read-only {
   background: transparent;
   border-color: transparent;
-  color: #666;
+  color: var(--readonly-text);
   cursor: default;
 }
 
@@ -53,7 +54,7 @@
  * fixed per instruction kind, so they're set apart from the decoder's
  * signals above by a dashed rule. */
 .control-table tr:not(.ctrl-fwd-row) + .ctrl-fwd-row td {
-  border-top: 1px dashed #999;
+  border-top: 1px dashed var(--rule);
 }
 /* The hazard note under the Fwdop rows: spans the whole table, so it wraps
  * instead of following the table's nowrap cells. Kept within the scroll
@@ -67,12 +68,12 @@
   font-size: 11px;
 }
 .control-table td.ctrl-fwd-note-info {
-  color: #1d3f73;
-  background: #dce6f4;
+  color: var(--note-info-text);
+  background: var(--note-info-bg);
 }
 .control-table td.ctrl-fwd-note-warning {
-  color: #6b4e00;
-  background: rgba(255, 193, 7, 0.2);
+  color: var(--note-warning-text);
+  background: var(--mark-warning);
 }
 
 /* Mark colors — same four states as the other tables, applied per-cell and
@@ -86,15 +87,18 @@
  * Fwdop row flagging a load-use hazard.
  * Written as combined-class selectors (.ctrl-name.mark-success) so they
  * correctly override .ctrl-name's own unconditional background above —
- * matching selector specificity, not source order. */
+ * matching selector specificity, not source order.
+ * .ctrl-name is sticky over scrolling cells, so its marked states are
+ * layered over the tray colour (an opaque base) rather than left
+ * translucent, or cells would show through it. */
 .ctrl-head.mark-default,
 .ctrl-cell.mark-default { background: transparent; }
-.ctrl-name.mark-default { background: #e0e0e0; }
+.ctrl-name.mark-default { background: var(--tray); }
 .ctrl-head.mark-success,
-.ctrl-cell.mark-success,
-.ctrl-name.mark-success { background: rgba(76, 175, 80, 0.15); }
+.ctrl-cell.mark-success { background: var(--mark-success); }
+.ctrl-name.mark-success { background: linear-gradient(var(--mark-success), var(--mark-success)), var(--tray); }
 .ctrl-head.mark-warning,
-.ctrl-cell.mark-warning,
-.ctrl-name.mark-warning { background: rgba(255, 193, 7, 0.2); }
+.ctrl-cell.mark-warning { background: var(--mark-warning); }
+.ctrl-name.mark-warning { background: linear-gradient(var(--mark-warning), var(--mark-warning)), var(--tray); }
 .ctrl-head.mark-danger,
-.ctrl-cell.mark-danger  { background: rgba(244, 67, 54, 0.2); }
+.ctrl-cell.mark-danger  { background: var(--mark-danger); }
