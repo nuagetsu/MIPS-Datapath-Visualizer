@@ -150,6 +150,71 @@
   overflow-y: auto;
 }
 
+/* The code editor fills whatever the column has left over, so the
+ * "Starting $pc" row below it takes its room from the editor. Its floor
+ * is lowered a little (from AceEditorPanel.css's 200px) so the extra row
+ * still fits on shorter windows without the column scrolling. */
+.app-editors > .ace-editor-panel {
+  min-height: 170px;
+}
+
+/* ---- Starting $pc: one row between the editor's buttons and the
+ * Assembled listing, styled like the panel headers around it. */
+.app-start-pc {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 5px 8px;
+  margin-top: -6px; /* sit close to the Upload/Download buttons it belongs with */
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.app-start-pc-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.app-start-pc-input {
+  width: 11ch;
+  padding: 2px 6px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--chip-bg);
+  color: var(--text);
+}
+
+.app-start-pc-input::placeholder {
+  color: var(--text-faint);
+}
+
+.app-start-pc-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.app-start-pc-input[aria-invalid="true"] {
+  border-color: var(--link-alert);
+  background: var(--mark-danger);
+}
+
+.app-start-pc-note {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-faint);
+}
+
+.app-start-pc-note-error {
+  font-style: normal;
+  color: var(--link-alert);
+}
+
 /* ---- Tables tray: a slide handle permanently docked to the tray's left
  * edge, with the actual tables sliding/fading in beside it. Styled as a
  * distinct bordered panel (light gray background + border, matching
@@ -278,7 +343,7 @@
 
 .app-tables-chip {
   font-size: 12px;
-  padding: 3px 10px;
+  padding: 3px 10px 3px 7px;
   border: 1px solid var(--border-strong);
   border-radius: 999px;
   background: var(--chip-bg);
@@ -373,7 +438,7 @@
 .app-diagram-toggle {
   font-size: 12px;
   line-height: 1.4;
-  padding: 4px 10px;
+  padding: 4px 10px 4px 7px;
   border: 1px solid var(--border-strong);
   border-radius: 4px;
   /* White (light) / raised grey (dark) when off, so it stands out against the bar. */
@@ -399,6 +464,46 @@
 
 .app-diagram-toggle-on:hover {
   background: var(--accent-hover);
+}
+
+/* ---- Checkbox toggles (App.tsx's ToggleChip): the diagram toggles and
+ * the tray's table chips are <label>s around a real checkbox, so the tick
+ * says on/off and the colour just reinforces it. On the blue "on" fill the
+ * box is drawn white (accent-color picks a dark tick for contrast), so a
+ * checked box still stands out against the chip. */
+.app-diagram-toggle,
+.app-tables-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.app-diagram-toggle input[type="checkbox"],
+.app-tables-chip input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.app-diagram-toggle-on input[type="checkbox"],
+.app-tables-chip-on input[type="checkbox"] {
+  accent-color: var(--accent-text);
+}
+
+/* Keyboard focus lands on the checkbox; outline the whole chip instead. */
+.app-diagram-toggle input[type="checkbox"]:focus-visible,
+.app-tables-chip input[type="checkbox"]:focus-visible {
+  outline: none;
+}
+
+.app-diagram-toggle:has(input:focus-visible),
+.app-tables-chip:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .app-diagram {

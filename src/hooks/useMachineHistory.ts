@@ -29,6 +29,12 @@
  *     instruction was fetched and recompute from there with the new
  *     program, instead of starting over.
  *
+ * Starting $pc (`textBase`): the byte address of the program's first
+ * instruction (App.tsx's "Starting $pc" field, default 0). Internally the
+ * pc is still a program index (0, 1, 2…); pipeline.ts's addressOf()/
+ * programIndexOf() convert to and from the $pc register's byte address.
+ * reset() puts $pc back to textBase.
+ *
  * Deliberately thin otherwise: each step's job is still (1) call execStage
  * (or the pipeline engine) with read access into the banks, (2) commit any
  * reported regWrite/memWrite/pcNext back into the banks. All the actual
@@ -55,13 +61,14 @@
  * useMemoryBank instance's job (a remount), same as the original.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { int32 } from "../lib/Numbers/int32";
 import type { RegisterBank, RegisterSnapshot } from "./useRegisterBank";
 import type { MemoryBank, MemorySnapshot } from "./useMemoryBank";
 import { canRun, execStage, type ProgramLine } from "../lib/mips-machine/interpreter";
 import type { CycleStage, MachineState, ValsSnapshot } from "../lib/mips-machine/machineState";
 import {
   PipelineEngine,
+  addressOf,
+  programIndexOf,
   type BaseReaders,
   type PipelineEngineSnapshot,
   type PipelineSlotView,
@@ -136,8 +143,9 @@ export interface MachineHistory {
   stepBack: () => void;
   /** Jump to a frame (clamped to the timeline). */
   seek: (position: number) => void;
-  /** Clears the timeline and pc/stage/vals (see the NOTE above — does not
-   * touch register/memory values). */
+  /** Clears the timeline and pc/stage/vals, and puts $pc back to the
+   * starting $pc (see the NOTE above — does not touch other register or
+   * memory values). */
   reset: () => void;
   /** Call after editing a register or memory word by hand: the edit becomes
    * part of the frame on screen and everything after it is recomputed. */
@@ -154,14 +162,17 @@ export interface MachineHistory {
    *   - with `resume` (from planResume()): continuing the current run from
    *     that frame;
    *   - without: from the start, after `setup` has put the starting values
-   *     in the banks (e.g. loading .data).
+   *     in the banks (e.g. loading .data and setting $pc).
+   * `textBase` is the new program's starting $pc (defaults to the current
+   * one); pass the same value to the hook as `textBase` once the program
+   * is accepted.
    * If the run reaches a run-time error, everything — timeline, registers,
    * memory, `setup`'s changes — is put back as it was and the error is
    * returned, for Assemble to report. Otherwise the new timeline is kept
    * and null returned; set the program right after, and it won't be
    * rebuilt.
    */
-  prepare: (next: ProgramLine[], resume: ResumePoint | null, setup?: () => void) => RunError | null;
+  prepare: (next: ProgramLine[], resume: ResumePoint | null, setup?: () => void, textBase?: number) => RunError | null;
 }
 
 /** A run-time error found by prepare(). */
@@ -185,6 +196,7 @@ export function useMachineHistory(
   pipeline = false,
   hazardUnit = false,
   earlyBranch = false,
+  textBase = 0,
 ): MachineHistory {
   const pcRef = useRef(0); // pcRef is just the index for programLine array, not the byte addressing of the pc
   const stageIdxRef = useRef(0);
@@ -205,6 +217,9 @@ export function useMachineHistory(
   // it, before that program is the app's state.
   const progRef = useRef(program);
   progRef.current = program;
+  // The starting $pc the step functions use — same arrangement as progRef.
+  const baseRef = useRef(textBase);
+  baseRef.current = textBase;
   // Set by a successful prepare(): the timeline for the program about to
   // arrive is already built, so the effect below mustn't rebuild it.
   const preparedRef = useRef(false);
@@ -244,7 +259,9 @@ export function useMachineHistory(
     stageIdxRef.current = snap.stageIdx;
     valsRef.current = snap.vals;
     haltedRef.current = snap.halted;
-    engineRef.current = snap.engine ? PipelineEngine.restore(progRef.current, baseReaders, snap.engine) : null;
+    engineRef.current = snap.engine
+      ? PipelineEngine.restore(progRef.current, baseReaders, snap.engine, baseRef.current)
+      : null;
   }
 
   // ---- Executing one step on the live machine ------------------------------
@@ -257,7 +274,7 @@ export function useMachineHistory(
 
   function stepPipeline(): StepResult | null {
     if (haltedRef.current) return null;
-    if (!engineRef.current) engineRef.current = new PipelineEngine(progRef.current, baseReaders);
+    if (!engineRef.current) engineRef.current = new PipelineEngine(progRef.current, baseReaders, baseRef.current);
     const result = engineRef.current.step(hazardUnit, earlyBranch);
     if (!result) {
       haltedRef.current = true;
@@ -340,7 +357,8 @@ export function useMachineHistory(
     if (stage === "R") {
       if (state.pcNext) {
         regBank.WR("pc", state.pcNext);
-        pcRef.current = int32.toNum(int32.srl(state.pcNext, 2));
+        // Byte address -> program index, relative to the starting $pc.
+        pcRef.current = programIndexOf(state.pcNext, baseRef.current);
       }
       stageIdxRef.current = 0;
     } else {
@@ -453,7 +471,7 @@ export function useMachineHistory(
     engineRef.current = null;
     framesRef.current = [];
     headOpenRef.current = false;
-    regBank.WR("pc", int32.num(0));
+    regBank.WR("pc", addressOf(0, baseRef.current));
     show(0, true);
   }
 
@@ -518,15 +536,22 @@ export function useMachineHistory(
     return { message: state.error, pc: failing ? failing.pc : state.pc };
   }
 
-  function prepare(next: ProgramLine[], resume: ResumePoint | null, setup?: () => void): RunError | null {
+  function prepare(
+    next: ProgramLine[],
+    resume: ResumePoint | null,
+    setup?: () => void,
+    nextBase: number = baseRef.current,
+  ): RunError | null {
     // Everything needed to put things back if the test run fails.
     const savedFrames = framesRef.current;
     const savedPosition = positionRef.current;
     const savedHeadOpen = headOpenRef.current;
     const savedSettings = settingsRef.current;
+    const savedBase = baseRef.current;
     const savedLive = capture();
 
     progRef.current = next;
+    baseRef.current = nextBase;
     if (resume && resume.frame < savedFrames.length) {
       // Work on a copy: rebuildFrom() truncates the array it's given.
       framesRef.current = savedFrames.slice(0, resume.frame + 1);
@@ -545,6 +570,7 @@ export function useMachineHistory(
     // The program would fail: put the previous program's run back exactly
     // as it was (bank displays included — this restore is queued last).
     progRef.current = program;
+    baseRef.current = savedBase;
     framesRef.current = savedFrames;
     headOpenRef.current = savedHeadOpen;
     settingsRef.current = savedSettings;

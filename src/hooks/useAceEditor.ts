@@ -24,7 +24,8 @@
  *   - reset()      -> clears mark/next/err (was RES() in the original)
  *   - read-only mode snaps the cursor/selection back to the marked line
  *   - gutter click toggles a breakpoint (tracked in a ref, mirroring `brkpts`)
- *   - pcNum mode replaces line numbers with word-aligned hex addresses
+ *   - pcNum mode replaces line numbers with word-aligned hex addresses,
+ *     counted from base() (App.tsx sets it to the starting $pc)
  *
  * Theme: `theme` is live — changing it (useTheme's aceTheme, light/dark)
  * re-themes the mounted editor without recreating it. Both theme modules
@@ -112,7 +113,8 @@ export interface AceEditorOptions {
 export interface AceEditorHandle {
   /** The live Ace editor instance, for anything not covered by this handle. */
   editor: Ace.Editor;
-  /** Re-anchor the pcNum gutter to a new base address, given as a hex string. */
+  /** Re-anchor the pcNum gutter to a new base address, given as a hex
+   * string. The gutter redraws straight away. */
   base: (hex: string) => void;
   value: () => string;
   load: (text: string) => void;
@@ -276,7 +278,13 @@ export function useAceEditor(
     // ---- handle methods -----------------------------------------------
     const base = (hex: string) => {
       baseAddrRef.current = safeParseHex(hex);
-      if (options.pcNum) applyPcGutterRenderer();
+      if (options.pcNum) {
+        applyPcGutterRenderer();
+        // The gutter only re-renders on its own when the text changes, so
+        // a new base on unchanged text would otherwise show the old
+        // addresses until the next edit.
+        editor.renderer.updateFull();
+      }
     };
 
     const value = () => editor.getValue();

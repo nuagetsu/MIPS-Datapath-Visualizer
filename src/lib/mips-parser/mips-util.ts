@@ -29,18 +29,12 @@ const funct: Record<string, Int32Bits> = {
 // ---- Line references --------------------------------------------------------
 
 /**
- * "line N (0xA)": a 1-indexed source line plus the address the code
- * editor's gutter shows beside it (useAceEditor's pcNum gutter: row × 4,
- * lowercase hex, no leading zeros — so line 1 is 0x0 and line 2 is 0x4).
- * Every error message that names a line uses this, so the number can be
- * matched against either the line count or the gutter.
- *
- * The gutter numbers every row, including comment, label-only and .data
- * rows, so this is the gutter's address for the line rather than the
- * instruction's address in memory.
+ * "line N": a 1-indexed source line, matching the plain line numbers in
+ * the code editor's gutter. Every error message that names a line uses
+ * this, so they all read the same way.
  */
 export function lineRef(line: number): string {
-  return `line ${line} (0x${(Math.max(0, line - 1) * 4).toString(16)})`;
+  return `line ${line}`;
 }
 
 // ---- Error constructors ---------------------------------------------------
@@ -375,6 +369,9 @@ export interface AssembledLine {
   prop: InstructionLine["prop"] & { bin: Int32Bits };
 }
 
+/** Offsets from the program's first instruction (0, 4, 8, ...), not
+ * absolute addresses: assemble$label adds the starting $pc where an
+ * absolute address is needed (j's target). */
 function assemble$pc(ast: TextLine[]): AddressedLine[] {
   let pc = 0;
   return ast.map((line) => {
@@ -389,6 +386,7 @@ function assemble$find_lbl(ast: AddressedLine[], label: string): number {
   return found ? found.prop.pc : -4;
 }
 
+/** `base`: the starting $pc (byte address of the first instruction). */
 function assemble$label(ast: AddressedLine[], base: number): InstructionLine[] {
   const ir: InstructionLine[] = [];
   for (const line of ast) {
@@ -397,13 +395,18 @@ function assemble$label(ast: AddressedLine[], base: number): InstructionLine[] {
     const pc = line.prop.pc;
     switch (inst.prop.type) {
       case "B": {
+        // PC-relative, so the starting $pc doesn't matter.
         const target = assemble$find_lbl(ast, inst.prop.lbl);
         (inst.prop as unknown as { imm: NumNode }).imm = I32((target - (pc + 4)) / 4, 32);
         break;
       }
       case "J": {
+        // j's 26-bit field holds bits [27:2] of the absolute target address
+        // (the CPU takes bits [31:28] from PC+4). Was `target/4 + base/4`
+        // with base masked to 0x03FFFFFF, which dropped address bits 26-27.
         const target = assemble$find_lbl(ast, inst.prop.lbl);
-        (inst.prop as unknown as { imm: NumNode }).imm = I32(target / 4 + base / 4, 32);
+        const addr = (base + target) >>> 0;
+        (inst.prop as unknown as { imm: NumNode }).imm = I32((addr >>> 2) & 0x03ffffff, 32);
         break;
       }
     }
@@ -457,9 +460,13 @@ function I32(num: number, len: number): NumNode {
  *
  * layoutData() above is ready to provide the resolved address once this
  * expansion pass exists — la's translate case is where it'd be used.
+ *
+ * `start`: the starting $pc — the byte address of the first instruction —
+ * as a number, or as a hex string ("00400000" / "0x00400000"). Default 0.
+ * Only j's encoding depends on it (branches are PC-relative).
  */
-export function assemble(ast: TextLine[], _data: DataDecl[] | null, hex?: string): AssembledLine[] {
-  const base = int32.toNum(int32.and(int32.hex(hex ?? "00000000"), int32.hex("03FFFFFF")));
+export function assemble(ast: TextLine[], _data: DataDecl[] | null, start: number | string = 0): AssembledLine[] {
+  const base = typeof start === "string" ? int32.toNum(int32.hex(start)) >>> 0 : start >>> 0;
   const addressed = assemble$pc(ast);
   const resolved = assemble$label(addressed, base);
   return translate(resolved);
@@ -506,7 +513,8 @@ function translate$inst(inst: Instr): Int32Bits {
       return bins;
     case "J":
       bins = int32.or(bins, int32.sll(opcode[p.op], 26));
-      bins = int32.or(bins, int32.and(int32.hex("0FFFFFFF"), (p as unknown as { imm: NumNode }).imm.prop.bit));
+      // 26-bit field (was masked to 28 bits, which could spill into the opcode).
+      bins = int32.or(bins, int32.and(int32.hex("03FFFFFF"), (p as unknown as { imm: NumNode }).imm.prop.bit));
       return bins;
     case "U":
       // Added: original had no case for this at all.

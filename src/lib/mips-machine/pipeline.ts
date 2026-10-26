@@ -67,6 +67,12 @@
  * EX stages are computed against the pending state, but never MEM or WB,
  * so they read registers but can't change anything.
  *
+ * Starting $pc: instructions are identified by program index (0, 1, 2…)
+ * throughout, but the program's first instruction sits at byte address
+ * `textBase` (App.tsx's "Starting $pc" field, default 0). addressOf() and
+ * programIndexOf() convert between the two; useMachineHistory uses the
+ * same helpers in single-cycle mode.
+ *
  * Timeline scrubbing: snapshot() captures the engine's complete state
  * between cycles, and PipelineEngine.restore() builds an engine back from
  * one, so useMachineHistory can rewind to any earlier cycle and carry on
@@ -84,6 +90,21 @@ import type { WireId } from "./datapath";
 import { unalignedMem, outOfRangeMem, wordIndexOf, byteOffsetOf, getByteBits, setByteBits } from "./memoryWords";
 
 export const STAGES: CycleStage[] = ["F", "D", "A", "M", "R"];
+
+// ---- Program index <-> byte address -----------------------------------------
+
+/** The byte address of the instruction at program index `pc`, for a
+ * program whose first instruction is at byte address `textBase`. */
+export function addressOf(pc: number, textBase = 0): Int32Bits {
+  return int32.num((textBase + pc * 4) | 0);
+}
+
+/** The program index of the instruction at byte address `addr` (negative,
+ * or past the end of the program, if `addr` is outside it — canRun() then
+ * says so). */
+export function programIndexOf(addr: Int32Bits, textBase = 0): number {
+  return ((int32.toNum(addr) - textBase) | 0) >> 2;
+}
 
 /** Side-effect-free access to the real (committed) register file and
  * memory — useRegisterBank.peek / useMemoryBank.peekWord. */
@@ -324,12 +345,13 @@ export interface Precomputed {
 
 /** Runs every stage of the instruction at `pc` in order, as the single-
  * cycle runner would, against `pending` — and applies its writes to
- * `pending`, so the instructions fetched after it see them. */
-export function precompute(program: ProgramLine[], pc: number, pending: PendingState): Precomputed {
+ * `pending`, so the instructions fetched after it see them. `textBase` is
+ * the byte address of the program's first instruction. */
+export function precompute(program: ProgramLine[], pc: number, pending: PendingState, textBase = 0): Precomputed {
   const states: MachineState[] = [];
   const reads: StageRead[][] = [];
   const wires: WireId[] = [];
-  const pcBits = int32.num(pc * 4);
+  const pcBits = addressOf(pc, textBase);
   let vals: ValsSnapshot = {};
 
   for (let i = 0; i < STAGES.length; i++) {
@@ -367,7 +389,7 @@ export function precompute(program: ProgramLine[], pc: number, pending: PendingS
   }
 
   const pcNext = states[STAGES.length - 1].pcNext;
-  return { states, reads, wires, nextPc: pcNext ? int32.toNum(int32.srl(pcNext, 2)) : null };
+  return { states, reads, wires, nextPc: pcNext ? programIndexOf(pcNext, textBase) : null };
 }
 
 // ---- The engine ------------------------------------------------------------
@@ -403,11 +425,11 @@ const MEM_IDX = 3;
 
 /** A wrong-path instruction's IF, ID and EX stages (all it can reach before
  * a flush), against `pending` — reads only. Stops early if a stage errors. */
-function precomputeDoomed(program: ProgramLine[], pc: number, pending: PendingState): Precomputed {
+function precomputeDoomed(program: ProgramLine[], pc: number, pending: PendingState, textBase = 0): Precomputed {
   const states: MachineState[] = [];
   const reads: StageRead[][] = [];
   const wires: WireId[] = [];
-  const pcBits = int32.num(pc * 4);
+  const pcBits = addressOf(pc, textBase);
   let vals: ValsSnapshot = {};
   for (let i = 0; i <= EX_IDX; i++) {
     const stageReads: StageRead[] = [];
@@ -476,10 +498,13 @@ export class PipelineEngine {
   private pcParked = false;
   private readonly program: ProgramLine[];
   private readonly pending: PendingState;
+  /** Byte address of the program's first instruction (the starting $pc). */
+  private readonly textBase: number;
 
-  constructor(program: ProgramLine[], base: BaseReaders) {
+  constructor(program: ProgramLine[], base: BaseReaders, textBase = 0) {
     this.program = program;
     this.pending = new PendingState(base);
+    this.textBase = textBase;
   }
 
   /** A copy of this engine's whole state between cycles. Slots are copied
@@ -501,8 +526,8 @@ export class PipelineEngine {
 
   /** A new engine in the state `snap` was taken in. `snap` itself is left
    * untouched, so it can be restored again later. */
-  static restore(program: ProgramLine[], base: BaseReaders, snap: PipelineEngineSnapshot): PipelineEngine {
-    const engine = new PipelineEngine(program, base);
+  static restore(program: ProgramLine[], base: BaseReaders, snap: PipelineEngineSnapshot, textBase = 0): PipelineEngine {
+    const engine = new PipelineEngine(program, base, textBase);
     engine.slots = snap.slots.map((s) => ({ ...s }));
     engine.bubbles = [...snap.bubbles];
     engine.nextPc = snap.nextPc;
@@ -595,21 +620,27 @@ export class PipelineEngine {
       // is the wrong one (or nothing, past the end of the program).
       const pc = this.predictPc;
       if (pc !== null && canRun(this.program, pc)) {
-        this.slots.push({ seq: this.seq++, pc, stageIdx: 0, ...precomputeDoomed(this.program, pc, this.pending), doomed: true });
+        this.slots.push({
+          seq: this.seq++,
+          pc,
+          stageIdx: 0,
+          ...precomputeDoomed(this.program, pc, this.pending, this.textBase),
+          doomed: true,
+        });
         this.predictPc = pc + 1;
-        effects.pc = int32.num(pc * 4);
+        effects.pc = addressOf(pc, this.textBase);
       } else {
         this.predictPc = null;
       }
     } else if (this.canFetch()) {
       const pc = this.nextPc as number;
-      const pre = precompute(this.program, pc, this.pending);
+      const pre = precompute(this.program, pc, this.pending, this.textBase);
       const op = pre.states[0]?.op ?? "";
       // A taken branch or jump: the not-taken prediction will be wrong.
       const redirect = hazardUnit && pre.nextPc !== null && pre.nextPc !== pc + 1 && (isBranchOp(op) || isJumpOp(op));
       this.slots.push({ seq: this.seq++, pc, stageIdx: 0, ...pre, redirect });
       this.nextPc = pre.nextPc;
-      effects.pc = int32.num(pc * 4);
+      effects.pc = addressOf(pc, this.textBase);
       if (redirect) {
         this.awaitingRedirect = true;
         this.predictPc = pc + 1;
@@ -617,7 +648,7 @@ export class PipelineEngine {
     } else if (this.nextPc !== null && !this.pcParked) {
       // Ran off the end: $pc shows where fetching stopped, as the single-
       // cycle mode leaves it after the last instruction.
-      effects.pc = int32.num(this.nextPc * 4);
+      effects.pc = addressOf(this.nextPc, this.textBase);
       this.pcParked = true;
     }
 

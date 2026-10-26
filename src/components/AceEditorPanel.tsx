@@ -19,9 +19,12 @@ export function AceEditorPanel({ onReady, theme }: AceEditorPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Plain line numbers (1, 2, 3…) in the gutter: they match the "line N"
+  // in error messages. Instruction addresses are shown in the Assembled
+  // listing instead, which has one row per instruction.
   const editor = useAceEditor(containerRef, {
     mode: "ace/mode/mips",
-    pcNum: true,
+    pcNum: false,
     write: true,
     theme,
   });

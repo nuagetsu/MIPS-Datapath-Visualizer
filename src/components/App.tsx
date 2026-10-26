@@ -16,6 +16,14 @@
  *     gutters, the console, and (see the effect below) the vals/control
  *     tables' own mark-based bank hooks.
  *
+ * Starting $pc: the optional "Starting $pc" field under the code editor
+ * sets the byte address of the program's first instruction (default
+ * 0x00000000). It's read on Assemble, like the source: $pc starts there,
+ * the assembled listing's gutter shows each instruction's address counting
+ * from it, and j targets are encoded against it. (The code editor's gutter
+ * shows plain line numbers.) Must be a word-aligned hex address. Instruction memory is separate from data memory here, so
+ * this doesn't move .data.
+ *
  * Register/memory values are the real source of truth (useRegisterBank/
  * useMemoryBank); seeking restores them to the step on screen. Editing a
  * register or memory word by hand rebases the timeline on the edit (see
@@ -29,18 +37,23 @@
  * memory & control signals" turns that off. Each of the four tables can also be shown or
  * hidden from the tray's toolbar.
  *
+ * Toggles: every on/off switch (the diagram's Shift/Jump/Pipeline/…
+ * toggles and the tray's table chips) is a real checkbox inside a chip-
+ * styled label (see ToggleChip), so its state reads as a tick, not just as
+ * a colour.
+ *
  * Errors: every error the console shows — syntax (parser + diagnose.ts),
  * assembly (mips-util / staticCheck), the test run on Assemble, and
  * run-time errors while stepping — goes through formatProblems(), so each
- * one reads "Error at line N (0xA): <what's wrong>" — 0xA being the
- * address the editor gutter shows for that line — followed by the offending
- * source line and, where there is one, a hint. A syntax pass can report
+ * one reads "Error at line N: <what's wrong>" — N matching the code
+ * editor's line numbers — followed by the offending source line and,
+ * where there is one, a hint. A syntax pass can report
  * several lines at once; all of them get a gutter marker.
  *
  * Theme: useTheme() switches light/dark (colours are CSS custom
  * properties in theme.css; the Ace editors get the matching Ace theme).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AceEditorPanel } from "./AceEditorPanel";
 import { useAceEditor, type AceEditorHandle } from "../hooks/useAceEditor";
 import { useRegisterBank, type RegisterBank } from "../hooks/useRegisterBank";
@@ -71,7 +84,14 @@ import {
   type ForwardingSignals,
   type BranchForwardingSignals,
 } from "../lib/mips-machine/forwarding";
-import { destReg, isBranchOp, isJumpOp, stallReason, type PipelineSlotView } from "../lib/mips-machine/pipeline";
+import {
+  addressOf,
+  destReg,
+  isBranchOp,
+  isJumpOp,
+  stallReason,
+  type PipelineSlotView,
+} from "../lib/mips-machine/pipeline";
 import { REGISTERS } from "../lib/mips-isa/registers";
 import { collectProgramRefs, type ProgramRefs } from "../lib/mips-machine/programRefs";
 import { checkProgram, checkSource } from "../lib/mips-machine/staticCheck";
@@ -122,6 +142,67 @@ function regName(num: number): string {
   return name ? `$${name}` : `$${num}`;
 }
 
+// ---- Toggle chips -----------------------------------------------------------
+
+interface ToggleChipProps {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  /** Base class (the chip's look), plus the class added while it's on. */
+  className: string;
+  onClassName: string;
+  title?: string;
+  children: ReactNode;
+}
+
+/**
+ * An on/off toggle: a real checkbox inside a chip-styled label, so the
+ * whole chip is clickable, keyboard users get a native checkbox (Space
+ * toggles it), screen readers announce "checked"/"not checked", and the
+ * tick makes it unambiguous which state is "on" — the blue fill alone
+ * didn't.
+ */
+function ToggleChip({ checked, onChange, className, onClassName, title, children }: ToggleChipProps) {
+  return (
+    <label className={checked ? `${className} ${onClassName}` : className} title={title}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span>{children}</span>
+    </label>
+  );
+}
+
+// ---- Starting $pc -----------------------------------------------------------
+
+/** "0x" + 8 lowercase hex digits, e.g. 0x00400000. */
+function formatAddr(n: number): string {
+  return "0x" + (n >>> 0).toString(16).padStart(8, "0");
+}
+
+type StartPcResult = { ok: true; value: number } | { ok: false; message: string; hint: string };
+
+/** Reads the "Starting $pc" field: empty = 0, else up to 8 hex digits
+ * (with or without 0x), word-aligned. */
+function parseStartPc(text: string): StartPcResult {
+  const t = text.trim();
+  if (t === "") return { ok: true, value: 0 };
+  const m = /^(?:0x)?([0-9a-f]{1,8})$/i.exec(t);
+  if (!m) {
+    return {
+      ok: false,
+      message: `Starting $pc "${t}" isn't a hex address`,
+      hint: `Enter up to 8 hex digits, e.g. 0x00400000, or leave the field empty to start at 0x00000000.`,
+    };
+  }
+  const value = parseInt(m[1], 16);
+  if (value % 4 !== 0) {
+    return {
+      ok: false,
+      message: `Starting $pc ${formatAddr(value)} isn't word-aligned`,
+      hint: `Instructions are 4 bytes long, so the address must be a multiple of 4 (ending in 0, 4, 8 or C), e.g. ${formatAddr(value - (value % 4))}.`,
+    };
+  }
+  return { ok: true, value };
+}
+
 // ---- Error reporting --------------------------------------------------------
 
 /** One problem to report: a 1-indexed source line (0 = no line known), what's
@@ -134,8 +215,8 @@ interface Problem {
 
 /**
  * Console text for a list of problems: a heading when there's more than
- * one, then for each "Error at line N (0xA): message" (lineRef: the line
- * number and the editor gutter's address for it), the source line itself
+ * one, then for each "Error at line N: message" (lineRef: the line number
+ * as the code editor's gutter shows it), the source line itself
  * (so the line number can be matched up without counting), and the hint.
  */
 function formatProblems(problems: Problem[], source: string, opts: { kind?: string; more?: number } = {}): string[] {
@@ -349,6 +430,15 @@ export function App() {
   const [showEarlyBranch, setShowEarlyBranch] = useState(false);
   const earlyBranch = hazards && showEarlyBranch;
 
+  // ---- Starting $pc --------------------------------------------------------
+  // What's typed in the field (empty = 0x00000000), and the starting $pc
+  // the current program was assembled with. The field only takes effect on
+  // Assemble, like the source.
+  const [startPcText, setStartPcText] = useState("");
+  const [programBase, setProgramBase] = useState(0);
+  const startPcCheck = parseStartPc(startPcText);
+  const startPcPending = startPcCheck.ok && startPcCheck.value !== programBase;
+
   // ---- Values tray: which tables are shown, and how much of each ------
   const [visibleTables, setVisibleTables] = useState<Record<TrayTable, boolean>>({
     registers: true,
@@ -385,7 +475,7 @@ export function App() {
   const memBank = useMemoryBank(256);
   const ctrlBank = useCtrlBank();
   const valsBank = useValsBank();
-  const machine = useMachineHistory(program, regBank, memBank, showPipeline, hazards, earlyBranch);
+  const machine = useMachineHistory(program, regBank, memBank, showPipeline, hazards, earlyBranch, programBase);
 
   // The tables edit the banks through these: a hand edit becomes part of
   // the step on screen, and the rest of the timeline is recomputed from it.
@@ -506,6 +596,14 @@ export function App() {
       codeEditor.err(problems.filter((p) => p.line > 0).map((p) => p.line - 1));
     };
 
+    // The starting $pc is checked first, before the source.
+    const start = parseStartPc(startPcText);
+    if (!start.ok) {
+      report([{ line: 0, message: start.message, hint: start.hint }]);
+      return;
+    }
+    const base = start.value;
+
     const result = parseMips(source);
     if (!result.ok) {
       report(result.diagnostics, { more: result.more });
@@ -516,12 +614,24 @@ export function App() {
       const { text, data } = result.program.prop;
       check(text, data);
       checkSource(text, data); // la not supported yet — see staticCheck.ts
-      const assembled = assemble(text, data); // AssembledLine[] w kind, lbl, inst, cmt, loc, pc, 32 bit instruction
+      const assembled = assemble(text, data, base); // AssembledLine[] w kind, lbl, inst, cmt, loc, pc, 32 bit instruction
 
       const programLines: ProgramLine[] = assembled.map((line) => ({
         op: line.prop.inst.prop.op,
         bin: line.prop.bin,
       }));
+      // The program must fit below the top of the 32-bit address space.
+      const end = base + programLines.length * 4;
+      if (end > 2 ** 32) {
+        report([
+          {
+            line: 0,
+            message: `Starting $pc ${formatAddr(base)} is too high: ${programLines.length} instructions would run past 0xffffffff`,
+            hint: `Use a starting $pc of at most ${formatAddr(2 ** 32 - programLines.length * 4)}.`,
+          },
+        ]);
+        return;
+      }
       // .data too big for memory: caught here, at its line, rather than
       // inside initializeMemory() with no line. Bad lw/sw/lb/sb addresses
       // are left to the test run below and to run time.
@@ -531,17 +641,19 @@ export function App() {
       const sourceLines: number[] = assembled.map((line) => line.prop.loc - 1);
       const refs = collectProgramRefs(assembled.map((line) => line.prop.inst), data);
 
-      // A fix for the run-time error the run stopped on? Same .data, and
-      // the same instructions except the one that failed: keep the run up
-      // to just before that instruction and carry on from there.
+      // A fix for the run-time error the run stopped on? Same .data, same
+      // starting $pc, and the same instructions except the one that
+      // failed: keep the run up to just before that instruction and carry
+      // on from there.
       const dataKey = JSON.stringify(data, (key, value) => (key === "loc" ? undefined : value));
-      const resume = dataKey === lastDataKeyRef.current ? machine.planResume(programLines) : null;
+      const resume =
+        dataKey === lastDataKeyRef.current && base === programBase ? machine.planResume(programLines) : null;
 
       // Test-run it before accepting it: build its whole run now (from the
-      // resume point, or from the start with .data loaded and $pc at 0).
-      // If the run hits a run-time error, nothing changes — the previous
-      // program and its run stay — and the error is reported like any
-      // other assembly error, at its line.
+      // resume point, or from the start with .data loaded and $pc at the
+      // starting $pc). If the run hits a run-time error, nothing changes —
+      // the previous program and its run stay — and the error is reported
+      // like any other assembly error, at its line.
       const runError = machine.prepare(
         programLines,
         resume,
@@ -550,8 +662,9 @@ export function App() {
           // count as "touched" by this new program.
           memBank.RES();
           initializeMemory(data, memBank);
-          regBank.WR("pc", int32.num(0));
+          regBank.WR("pc", addressOf(0, base));
         },
+        base,
       );
       if (runError) {
         const line = sourceLines[runError.pc] ?? -1;
@@ -568,12 +681,17 @@ export function App() {
       }
 
       lastDataKeyRef.current = dataKey;
+      // The assembled listing has one row per instruction, so with its
+      // gutter counting from the starting $pc each row shows that
+      // instruction's real address.
+      dispEditor.base(formatAddr(base));
       dispEditor.load(mipsUtil.print(assembled));
       codeEditor.reset();
       dispEditor.reset();
       setProgram(programLines);
       setProgramSourceLines(sourceLines);
       setProgramRefs(refs);
+      setProgramBase(base);
       if (resume) {
         consEditor.log(
           `Fixed ${lineRef(sourceLines[resume.pc] + 1)}: resuming just before it runs ` +
@@ -581,7 +699,10 @@ export function App() {
         );
       } else {
         setTouchedMemory(new Set());
-        consEditor.log(`Assembled ${programLines.length} instruction${programLines.length === 1 ? "" : "s"} with no errors.`);
+        consEditor.log(
+          `Assembled ${programLines.length} instruction${programLines.length === 1 ? "" : "s"} with no errors, ` +
+            `starting at $pc = ${formatAddr(base)}.`,
+        );
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -592,7 +713,7 @@ export function App() {
       const loc = err instanceof CompileError ? err.loc : 0;
       report([{ line: loc, message }]);
     }
-  }, [codeEditor, dispEditor, consEditor, memBank, regBank, machine, showPipeline]);
+  }, [codeEditor, dispEditor, consEditor, memBank, regBank, machine, showPipeline, startPcText, programBase]);
 
   // ---- Step / Back / Seek ---------------------------------------------
   const handleStep = useCallback(() => {
@@ -818,6 +939,39 @@ export function App() {
       <main className={tablesCollapsed ? "app-main app-main-tables-collapsed" : "app-main"}>
         <section className="app-editors">
           <AceEditorPanel onReady={setCodeEditor} theme={aceTheme} />
+          <div className="app-start-pc">
+            <label className="app-start-pc-label" htmlFor="app-start-pc-input">
+              Starting $pc:
+            </label>
+            <input
+              id="app-start-pc-input"
+              className="app-start-pc-input"
+              type="text"
+              spellCheck={false}
+              autoComplete="off"
+              placeholder="0x00000000"
+              value={startPcText}
+              onChange={(e) => setStartPcText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleParse();
+              }}
+              aria-invalid={!startPcCheck.ok}
+              aria-describedby="app-start-pc-note"
+              title="Byte address of the first instruction, in hex (a multiple of 4). Leave empty to start at 0x00000000. Applied when you press Assemble."
+            />
+            <span
+              id="app-start-pc-note"
+              className={startPcCheck.ok ? "app-start-pc-note" : "app-start-pc-note app-start-pc-note-error"}
+            >
+              {!startPcCheck.ok
+                ? startPcCheck.message
+                : startPcPending
+                  ? "Press Assemble to apply"
+                  : startPcText.trim() === ""
+                    ? "Optional, hex"
+                    : ""}
+            </span>
+          </div>
           <div className="app-editor-panel">
             <div className="app-editor-label">Assembled</div>
             <div ref={dispContainerRef} className="app-editor-container" />
@@ -831,25 +985,29 @@ export function App() {
         <section className="app-diagram-wrap">
           <div className="app-diagram-toolbar" role="group" aria-label="Diagram toggles">
             <span className="app-diagram-toolbar-label">Toggles:</span>
-            <button
-              className={showShift ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
-              onClick={() => setShowShift((s) => !s)}
-              aria-pressed={showShift}
+            <ToggleChip
+              className="app-diagram-toggle"
+              onClassName="app-diagram-toggle-on"
+              checked={showShift}
+              onChange={setShowShift}
               title={showShift ? "Hide shift (sll/srl) artwork" : "Show shift (sll/srl) artwork"}
             >
               Shift
-            </button>
-            <button
-              className={showJump ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
-              onClick={() => setShowJump((j) => !j)}
-              aria-pressed={showJump}
+            </ToggleChip>
+            <ToggleChip
+              className="app-diagram-toggle"
+              onClassName="app-diagram-toggle-on"
+              checked={showJump}
+              onChange={setShowJump}
               title={showJump ? "Hide jump (j) artwork" : "Show jump (j) artwork"}
             >
               Jump
-            </button>
-            <button
-              className={showPipeline ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
-              onClick={() => {
+            </ToggleChip>
+            <ToggleChip
+              className="app-diagram-toggle"
+              onClassName="app-diagram-toggle-on"
+              checked={showPipeline}
+              onChange={(on) => {
                 // The two modes step differently (micro-step vs. clock
                 // cycle), so a run in progress can't carry over: rewind to
                 // the start (putting the starting register/memory values
@@ -857,9 +1015,8 @@ export function App() {
                 setPlaying(false);
                 machine.seek(0);
                 machine.reset();
-                setShowPipeline((p) => !p);
+                setShowPipeline(on);
               }}
-              aria-pressed={showPipeline}
               title={
                 showPipeline
                   ? "Switch back to single-cycle execution (restarts the run)"
@@ -867,12 +1024,13 @@ export function App() {
               }
             >
               Pipeline
-            </button>
+            </ToggleChip>
             {showPipeline && (
-              <button
-                className={showHazards ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
-                onClick={() => setShowHazards((h) => !h)}
-                aria-pressed={showHazards}
+              <ToggleChip
+                className="app-diagram-toggle"
+                onClassName="app-diagram-toggle-on"
+                checked={showHazards}
+                onChange={setShowHazards}
                 title={
                   showHazards
                     ? "Back to the ideal pipeline: no stalls, flushes or forwarding hardware"
@@ -880,13 +1038,14 @@ export function App() {
                 }
               >
                 Pipeline Hazards
-              </button>
+              </ToggleChip>
             )}
             {hazards && (
-              <button
-                className={showEarlyBranch ? "app-diagram-toggle app-diagram-toggle-on" : "app-diagram-toggle"}
-                onClick={() => setShowEarlyBranch((e) => !e)}
-                aria-pressed={showEarlyBranch}
+              <ToggleChip
+                className="app-diagram-toggle"
+                onClassName="app-diagram-toggle-on"
+                checked={showEarlyBranch}
+                onChange={setShowEarlyBranch}
                 title={
                   showEarlyBranch
                     ? "Resolve branches in MEM again: up to three wrong-path instructions flushed"
@@ -894,7 +1053,7 @@ export function App() {
                 }
               >
                 Early Branch
-              </button>
+              </ToggleChip>
             )}
           </div>
           <div className="app-diagram">
@@ -928,16 +1087,16 @@ export function App() {
                 <div className="app-tables-toolbar-row" role="group" aria-label="Tables to show">
                   <span className="app-tables-toolbar-label">Show</span>
                   {TRAY_TABLES.map(({ key, label, title }) => (
-                    <button
+                    <ToggleChip
                       key={key}
-                      type="button"
-                      className={visibleTables[key] ? "app-tables-chip app-tables-chip-on" : "app-tables-chip"}
-                      onClick={() => setVisibleTables((v) => ({ ...v, [key]: !v[key] }))}
-                      aria-pressed={visibleTables[key]}
+                      className="app-tables-chip"
+                      onClassName="app-tables-chip-on"
+                      checked={visibleTables[key]}
+                      onChange={(on) => setVisibleTables((v) => ({ ...v, [key]: on }))}
                       title={`${visibleTables[key] ? "Hide" : "Show"}: ${title}`}
                     >
                       {label}
-                    </button>
+                    </ToggleChip>
                   ))}
                 </div>
                 <label className="app-tables-showall">
@@ -946,13 +1105,13 @@ export function App() {
                     checked={showAllValues}
                     onChange={(e) => setShowAllValues(e.target.checked)}
                   />
-                  Display all registers, memory &amp; control signals
+                  Display hidden registers, memory &amp; control signals
                 </label>
                 {!showAllValues && programRefs === null && (
                   <div className="app-tables-filter-note">Once you assemble a program, only relevant registers and memory will remain!</div>
                 )}
                 {!showAllValues && programRefs !== null && hiddenSummary && (
-                  <div className="app-tables-filter-note">Hiding {hiddenSummary}.</div>
+                  <div className="app-tables-filter-note">Currently hiding {hiddenSummary}.</div>
                 )}
               </div>
 
@@ -960,7 +1119,7 @@ export function App() {
               {visibleTables.datapath && <ValsTable bank={valsBank} />}
               {visibleTables.control && <ControlTable bank={ctrlBank} forwarding={forwardingRows} shownKinds={shownKinds} />}
               {visibleTables.memory && <MemoryTable bank={tableMemBank} shownWords={shownWords} />}
-              {noTablesShown && <div className="app-tables-filter-note">All tables are hidden. Pick one above to show it.</div>}
+              {noTablesShown && <div className="app-tables-filter-note">All tables are currently hidden. Pick one above to show it.</div>}
             </section>
           )}
         </div>
