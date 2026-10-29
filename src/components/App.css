@@ -80,40 +80,45 @@
   line-height: 1;
 }
 
-.app-feedback-group {
-  margin-left: auto;
-  display: flex;
-  flex-wrap: wrap;     /* NEW — lets the button drop to its own line if the group runs out of width */
-  align-items: center;
-  gap: 6px;
-  min-width: 0;         /* NEW — lets the group actually shrink instead of forcing overflow */
-}
-
-.app-feedback-link-label {
-  padding: 6px 12px;
-  color: var(--link-alert);
-  font-size: 12px;
-  font-weight: 600;
-  text-decoration: none;
-  white-space: normal;  /* was nowrap — lets long label text wrap instead of pushing width out */
-}
-
+/* "Feedback survey" button: pushed to the right end of the header's first
+ * row (margin-left: auto), title on top and the small note underneath. */
 .app-feedback-link {
-  padding: 6px 12px;
-  border: 1px solid var(--scrub-border);
+  margin-left: auto;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 12px;
+  border: 1px solid var(--accent);
   border-radius: 4px;
-  background: var(--panel);
-  color: var(--chip-text);
-  font-size: 12px;
-  font-weight: 600;
+  background: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
-  white-space: nowrap;  /* keep this on the button — it's short and shouldn't break mid-word */
-  flex-shrink: 0;        /* NEW — keeps the button from getting squashed/clipped as it wraps */
+  text-align: center;
+  line-height: 1.2;
+  flex-shrink: 0;
 }
 
 .app-feedback-link:hover {
-  background: var(--panel-hover);
-  border-color: var(--rule);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.app-feedback-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.app-feedback-link-title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.app-feedback-link-note {
+  font-size: 10px;
+  opacity: 0.9;
+  white-space: nowrap;
 }
 
 /* Three-column layout: editors | diagram | tables. Each column is its own

@@ -916,6 +916,16 @@ export function App() {
             </span>
           )}
         </div>
+        <a
+          className="app-feedback-link"
+          href="https://docs.google.com/forms/d/e/1FAIpQLScrvbrkKEVnt3GcCAFdV2qXZAolUTXxlA0ya6SAlXtPmifwIw/viewform?usp=dialog"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Opens the feedback survey in a new tab"
+        >
+          <span className="app-feedback-link-title">Feedback survey</span>
+          <span className="app-feedback-link-note">(any feedback would be greatly appreciated!)</span>
+        </a>
         <Scrubber
           timeline={machine.timeline}
           position={machine.position}
@@ -923,17 +933,6 @@ export function App() {
           complete={machine.complete}
           onSeek={handleSeek}
         />
-        {/* <div className="app-feedback-group">
-          <h1 className="app-feedback-link-label">We would appreciate it if you provided your feedback here: </h1>
-          <a
-            className="app-feedback-link"
-            href="https://docs.google.com/forms/d/1ikhZhLoUp3EycgYMbi0k7gV7K92e_o_0SDqBJSIv5eM/edit"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Give Feedback
-          </a>
-        </div> */}
       </header>
 
       <main className={tablesCollapsed ? "app-main app-main-tables-collapsed" : "app-main"}>
@@ -1105,13 +1104,13 @@ export function App() {
                     checked={showAllValues}
                     onChange={(e) => setShowAllValues(e.target.checked)}
                   />
-                  Display hidden registers, memory &amp; control signals
+                  Display all registers, memory &amp; control signals
                 </label>
                 {!showAllValues && programRefs === null && (
                   <div className="app-tables-filter-note">Once you assemble a program, only relevant registers and memory will remain!</div>
                 )}
                 {!showAllValues && programRefs !== null && hiddenSummary && (
-                  <div className="app-tables-filter-note">Currently hiding {hiddenSummary}.</div>
+                  <div className="app-tables-filter-note">Hiding {hiddenSummary}.</div>
                 )}
               </div>
 
@@ -1119,7 +1118,7 @@ export function App() {
               {visibleTables.datapath && <ValsTable bank={valsBank} />}
               {visibleTables.control && <ControlTable bank={ctrlBank} forwarding={forwardingRows} shownKinds={shownKinds} />}
               {visibleTables.memory && <MemoryTable bank={tableMemBank} shownWords={shownWords} />}
-              {noTablesShown && <div className="app-tables-filter-note">All tables are currently hidden. Pick one above to show it.</div>}
+              {noTablesShown && <div className="app-tables-filter-note">All tables are hidden. Pick one above to show it.</div>}
             </section>
           )}
         </div>
