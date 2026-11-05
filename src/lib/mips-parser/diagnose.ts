@@ -257,8 +257,14 @@ function checkRegister(tok: string, where: string): void {
 type TokenKind = "reg" | "number" | "mem" | "label" | "string" | "other";
 
 function kindOf(tok: string): TokenKind {
-  if (tok.startsWith("$")) return "reg";
+  // FIX: parentheses are checked before the "$" prefix. "$t2($t1)" (a
+  // register used as the offset) starts with "$", so it used to be
+  // classified as a plain register and reported as "needs a memory address
+  // in the form offset($reg), but got just $t2($t1)" — the memory-operand
+  // checks, which give the precise "offset must be a constant" message,
+  // were never reached.
   if (tok.includes("(") || tok.includes(")")) return "mem";
+  if (tok.startsWith("$")) return "reg";
   if (/^[-+]?[0-9.]/.test(tok) || /^'/.test(tok)) return "number";
   if (tok.startsWith('"')) return "string";
   if (LABEL_RE.test(tok)) return "label";
@@ -513,32 +519,38 @@ type Segment = "none" | "data" | "text";
 export function diagnoseSource(source: string): Diagnostic[] {
   const lines = source.split(/\r\n|\r|\n/);
   const out: Diagnostic[] = [];
-  const dataLine = lines.findIndex((l) => l.trim() === ".data" || l.trim().startsWith(".data"));
+  const dataLine = lines.findIndex((l) => {
+    const code = stripComment(l).code.trim();
+    return code === ".data" || code.startsWith(".data");
+  });
   let segment: Segment = "none";
   let sawText = false;
+  /** Line number of the first instruction/label seen outside any segment. */
+  let firstCodeLine = 0;
 
   lines.forEach((raw, idx) => {
     const lineNo = idx + 1;
     const report = (message: string, hint?: string) => out.push({ line: lineNo, message, hint, source: raw });
     try {
-      const { code: rawCode, comment } = stripComment(raw);
+      const { code: rawCode } = stripComment(raw);
       let code = rawCode.trim();
 
-      // Section directives. The grammar only accepts .data/.text alone on
-      // their line (no comment), .data only as the very first line, and
-      // requires .text after a .data segment.
+      // Section directives. The grammar accepts .data/.text alone on their
+      // line, optionally followed by a comment. Blank and comment lines may
+      // come before .data, but no instructions; .text must follow a .data
+      // segment.
       if (/^\.(data|text)\b/i.test(code)) {
         const dir = code.split(/\s+/)[0];
         if (dir !== ".data" && dir !== ".text") fail(`"${dir}" must be written in lowercase`, `Write ${dir.toLowerCase()}`);
         if (code !== dir) fail(`Nothing else can go on the ${dir} line`, `Move "${code.slice(dir.length).trim()}" to the next line`);
-        if (comment) fail(`Comments can't go on the ${dir} line`, `Move the comment to its own line in the .text segment`);
         if (dir === ".data") {
           if (segment !== "none") fail(`.data must come before .text (and appear only once)`);
+          // Set before the next check, so the declarations that follow are
+          // still checked as data rather than reported as misplaced.
           segment = "data";
-          if (idx !== 0) {
-            fail(`.data must be on the very first line of the program`, `Remove the ${idx === 1 ? "line" : `${idx} lines`} above it (comments and blank lines included)`);
+          if (firstCodeLine > 0) {
+            fail(`.data must come before any instructions`, `Move the code on line ${firstCodeLine} below a .text line after the data`);
           }
-          segment = "data";
         } else {
           if (sawText) fail(`.text appears more than once`);
           segment = "text";
@@ -548,11 +560,9 @@ export function diagnoseSource(source: string): Diagnostic[] {
       }
 
       if (segment === "data") {
-        if (code === "") {
-          if (comment) fail(`Comments aren't allowed in the .data segment`, `Move it below .text, or delete it`);
-          return;
-        }
-        if (comment) fail(`Comments aren't allowed in the .data segment`, `Move it below .text, or delete it`);
+        // Blank and comment-only lines are fine anywhere in the .data
+        // segment, and declarations may end with a comment (stripped above).
+        if (code === "") return;
         const lm = /^([^\s:"]+)\s*:\s*(.*)$/.exec(code);
         if (!lm) {
           if (/^\./.test(code)) {
@@ -576,6 +586,7 @@ export function diagnoseSource(source: string): Diagnostic[] {
 
       // Text (or a program with no section headers at all).
       if (code === "") return;
+      if (segment === "none" && firstCodeLine === 0) firstCodeLine = lineNo;
       const lm = /^([^\s:"]+)\s*:(.*)$/.exec(code);
       if (lm && !lm[1].includes("(") && !lm[1].includes(",")) {
         const [, name, after] = lm;

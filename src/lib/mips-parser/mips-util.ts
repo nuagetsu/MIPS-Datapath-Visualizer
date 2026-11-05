@@ -14,7 +14,8 @@ const opcode: Record<string, Int32Bits> = {
   xor: int32.hex("00"), nor: int32.hex("00"), slt: int32.hex("00"), sll: int32.hex("00"), srl: int32.hex("00"),
   addi: int32.hex("08"), slti: int32.hex("0A"), andi: int32.hex("0C"), ori: int32.hex("0D"), xori: int32.hex("0E"),
   beq: int32.hex("04"), bne: int32.hex("05"),
-  lw: int32.hex("23"), sw: int32.hex("2B"), lb: int32.hex("24"), sb: int32.hex("28"),
+  // FIX: lb is opcode 0x20 (100000). It was 0x24, which is lbu.
+  lw: int32.hex("23"), sw: int32.hex("2B"), lb: int32.hex("20"), sb: int32.hex("28"),
   j: int32.hex("02"),
   // Added: real MIPS opcode for lui (0x0F). Missing from the original table
   // — translate$inst's "U" case couldn't have worked without it.

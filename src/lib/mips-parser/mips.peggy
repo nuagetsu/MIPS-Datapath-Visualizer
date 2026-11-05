@@ -89,17 +89,28 @@
 }}
 
 // ---- Program structure ----------------------------------------------
+//
+// FIX: blank lines and comment lines are now allowed anywhere around the
+// section structure — before .data, between .data and .text, and between
+// data declarations — and .data/.text/data-declaration lines can carry a
+// trailing comment. Previously `.data` had to be on the very first line
+// (`_ ".data" _ _n`), with no comment after it, and nothing in the data
+// segment could have a comment. The AST is unchanged: comments outside
+// the .text segment are simply discarded (DataDecl has no cmt field).
 
 Prog
-  = _ dataSeg:DataSeg? (_ _n)? _ textSeg:TextSeg { return Prog(dataSeg, textSeg); }
+  = _skip dataSeg:DataSeg? _skip textSeg:TextSeg { return Prog(dataSeg, textSeg); }
   / textSeg:Texts { return Prog([], textSeg); }
 
 DataSeg
-  = _ ".data" _ _n _ datas:Datas { return datas; }
+  = _ ".data" _eol datas:Datas { return datas; }
 
+// Each declaration may be preceded by blank/comment lines and followed by
+// a comment. The trailing `_ Cmt?` takes the last declaration's comment
+// when no further declaration follows (the loop backtracks past it then).
 Datas
-  = _ head:Data tail:(_ _n _ @Data)* { return [head, ...tail]; }
-  / _ { return []; }
+  = _skip head:Data tail:(_eol _skip @Data)* _ Cmt? { return [head, ...tail]; }
+  / _skip { return []; }
 
 Data
   = _ name:Lbl _ ":" _ ".word"   _ vals:Val32 { return Data("int",  name, vals, location().start.line); }
@@ -113,7 +124,7 @@ Val8 "8-bit values"
   = _ head:C8 tail:(_ "," _ @C8)* { return [head, ...tail]; }
 
 TextSeg
-  = _ ".text" _ _n _ texts:Texts { return texts; }
+  = _ ".text" _eol texts:Texts { return texts; }
 
 Texts
   = _ head:Text tail:(_ _n _ @Text)* _a { return [head, ...tail]; }
@@ -295,3 +306,11 @@ _ "space" = [ \t]*
 _t "space" = [ \t]+
 _n "newline" = [\r\n]+
 _a "whitespace" = [ \t\r\n]*
+
+// End of a line that may carry a trailing comment: spaces, optional
+// "# ...", then the newline(s). Always consumes at least one newline, so
+// `_eol*` below can't loop forever.
+_eol "end of line" = _ Cmt? _n
+
+// Any number of blank or comment-only lines.
+_skip "blank or comment lines" = _eol*
