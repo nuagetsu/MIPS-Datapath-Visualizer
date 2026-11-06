@@ -277,8 +277,15 @@ function hazardNote(
         `flushed (${regs} ${flushed.length === 1 ? "is" : "are"} zeroed, leaving bubbles) and MUX 4/5 send the target to PC instead.`,
     );
   }
-  // The stall cycle: IF and ID held.
-  const heldInId = slots.find((s) => s.stalled && s.stage === "D");
+  // The stall cycle: IF and ID held. With early branches, a held branch
+  // whose operands are now ready isn't stalling any more: it resolves this
+  // cycle (forwarding if needed), so it falls through to the cases below.
+  const heldInId = slots.find(
+    (s) =>
+      s.stalled &&
+      s.stage === "D" &&
+      !(early && isBranchOp(s.op) && stallReason(s.state, ex?.state, mem?.state, early) === null),
+  );
   if (heldInId) {
     const head =
       `Stall: ${heldInId.op} is held in ID (and the next instruction in IF) because PC and IF/ID aren't written ` +
@@ -885,31 +892,9 @@ export function App() {
               onChange={(e) => setSpeedMs(1550 - Number(e.target.value))}
             />
           </label>
-          {machine.current && showPipeline && (
-            // Pipeline mode: which instruction is in each stage this cycle,
-            // in the same colour as its wires.
-            <span className="app-stage-indicator">
-              cycle={machine.position}
-              {(["F", "D", "A", "M", "R"] as CycleStage[]).map((stage) => {
-                const slot = machine.pipelineSlots.find((s) => s.stage === stage);
-                const bubble = machine.pipelineBubbles.includes(stage);
-                return (
-                  <span
-                    key={stage}
-                    style={slot ? { color: PIPELINE_WIRE_COLOURS[slot.seq % PIPELINE_WIRE_COLOURS.length] } : undefined}
-                  >
-                    {" "}
-                    {stage}:
-                    {slot
-                      ? `${slot.op}@${slot.pc}${slot.stalled ? "(stall)" : ""}${slot.flushed ? "(flush)" : ""}`
-                      : bubble
-                        ? "bubble"
-                        : "-"}
-                  </span>
-                );
-              })}
-            </span>
-          )}
+          {/* Pipeline mode's per-stage readout (which instruction is in each
+          stage this cycle) is drawn by DatapathDiagram itself, in a band
+          above the diagram with each label over its own stage. */}
           {machine.current && !showPipeline && (
             <span className="app-stage-indicator">
               line={machine.current.pc} stage={STAGE_LABELS[machine.current.stage]} op={machine.current.op}

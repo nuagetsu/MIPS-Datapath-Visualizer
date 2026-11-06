@@ -15,9 +15,21 @@
  * Every colour in the drawing — text, strokes, wires, component fills and
  * the five pipeline colours — is a theme.css custom property, so the whole
  * diagram follows light/dark mode with no re-render. */
-.datapath-diagram {
+/* The diagram's root: the stage-label row (pipeline mode only) stacked on
+ * top of the SVG, which takes whatever height is left. */
+.datapath-diagram-wrap {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.datapath-diagram {
+  width: 100%;
+  flex: 1 1 0;
+  min-height: 0;
   display: block;
   /* Default is xMidYMid meet — scales uniformly and letterboxes rather
    * than stretching, which would skew the diagram's right angles. Stated
@@ -87,6 +99,26 @@
   fill: var(--dp-ctrl);
 }
 
+/* ---- Bubbles (pipeline hazards mode) ----
+ * Every wire in a stage holding a bubble (a nop inserted by a stall or left
+ * by a flush) is drawn in a steady brown, so the empty stage reads at a glance. The
+ * brown is a diagram token like the others, with a lighter shade for the
+ * dark theme (kept here rather than in Theme.css since only the diagram
+ * uses it). */
+:root {
+  --dp-bubble-wire: #8b5a2b;
+}
+:root[data-theme="dark"] {
+  --dp-bubble-wire: #c8925a;
+}
+.dp-wire-bubble {
+  stroke: var(--dp-bubble-wire);
+  stroke-width: 2.5;
+}
+.dp-arrowhead-bubble {
+  fill: var(--dp-bubble-wire);
+}
+
 /* ---- Forwarding wires (pipeline hazards mode) ----
  * The EX/MEM and MEM/WB forwarding paths into MUX 6 and MUX 2 (see
  * datapathHazards.ts). Dashed and drawn under everything else, so they read
@@ -136,6 +168,52 @@
   font-style: italic;
   fill: var(--dp-bubble);
 }
+
+/* ---- Stage labels (pipeline mode) ----
+ * The HTML row above the SVG naming the instruction in each stage this
+ * cycle. Each label's width (set inline) is its stage's width on screen,
+ * and padding-left lines the row up with the drawing's left edge, so the
+ * labels tile the drawing and each is centred over its own stage.
+ *
+ * font-size matches the diagram toggles (.app-diagram-toggle, 12px) and,
+ * being HTML, stays that size however small the drawing is scaled. A label
+ * too long for a narrow stage wraps (e.g. "(flush)" onto a second line)
+ * rather than spilling into its neighbour.
+ *
+ * An occupied stage's label takes its instruction's wire colour (inline
+ * style); an empty stage or a bubble is muted. The dashed left borders mark
+ * the stage boundaries (the bars' centres). */
+.dp-stage-row {
+  display: flex;
+  flex-shrink: 0;
+  padding-bottom: 6px;
+}
+.dp-stage-label {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  padding: 2px 4px;
+  text-align: center;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  font-weight: bold;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  color: var(--dp-text);
+  opacity: 0.5;
+}
+.dp-stage-label + .dp-stage-label {
+  border-left: 1px dashed var(--border-strong);
+}
+.dp-stage-label-active {
+  opacity: 1;
+}
+/* A stage holding a bubble: "nop (bubble)", in the same brown as its
+ * wires. */
+.dp-stage-label-bubble {
+  color: var(--dp-bubble-wire);
+  opacity: 1;
+}
+
 /* ---- Control unit (pipeline mode) ----
  * The oval is always shown; its control lines and the WB/M/EX cells on the
  * pipeline registers (.dp-ctrl-overlay) appear only while the oval is

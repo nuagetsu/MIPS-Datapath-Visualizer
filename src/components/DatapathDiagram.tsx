@@ -48,6 +48,18 @@
  * in theme.css. Inline styles are used for labels rather than the SVG
  * `fill` attribute because var() is only reliably resolved in CSS.
  *
+ * Stage readout (pipeline mode): which instruction is in IF, ID, EX, MEM
+ * and WB this cycle is shown in a row of HTML labels directly above the
+ * SVG, each centred over its own stage region — between the centres of the
+ * pipeline-register bars on either side. They're HTML rather than SVG text
+ * so their font stays the same size as the diagram toggles (12px) however
+ * far the drawing is scaled down. To keep them over the right stage, the
+ * SVG's rendered size is watched (ResizeObserver) and each label's width is
+ * its stage's width in diagram units times the drawing's current scale;
+ * in pipeline mode the drawing is top-aligned (xMidYMin) so it sits right
+ * under the row. This works in every layout (plain pipeline, hazards,
+ * early branch).
+ *
  * Responsive by construction — unchanged from before: fixed coordinate
  * system inside one `viewBox` (originally 900×580, matching every
  * coordinate ported from processor.js; bumped to 900×620 to actually
@@ -56,7 +68,7 @@
  * value and needs updating in step with this one); the SVG's on-page size
  * is pure CSS (DatapathDiagram.css), no JS resize handling.
  */
-import type { CSSProperties } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { Int32Bits } from "../lib/Numbers/int32";
 import * as bit from "../lib/Numbers/bit";
 import type { WireId } from "../lib/mips-machine/datapath";
@@ -148,7 +160,7 @@ import {
   BR_FWD_MEMWB,
   BR_FWD_MEMWB_TAP,
 } from "../lib/mips-machine/datapathBranch";
-import { isBranchOp, isJumpOp } from "../lib/mips-machine/pipeline";
+import { isBranchOp, isJumpOp, stallReason } from "../lib/mips-machine/pipeline";
 import { FWD_EX_MEM, FWD_MEM_WB, FWD_NONE, type ForwardingSignals, type BranchForwardingSignals } from "../lib/mips-machine/forwarding";
 import type { PipelineSlotView } from "../lib/mips-machine/pipeline";
 import type { CycleStage, MachineState } from "../lib/mips-machine/machineState";
@@ -194,7 +206,7 @@ export interface DatapathDiagramProps {
    * (useMachineHistory's pipelineSlots). Each lights the pieces of its own
    * wiring that lie in the stage region it occupies, in its own colour
    * (PIPELINE_WIRE_COLOURS[seq % 5]). activeWires is not used in pipeline
-   * mode. */
+   * mode. Also feeds the per-stage labels above the diagram. */
   pipelineSlots?: PipelineSlotView[];
   /** Hazards mode only: this cycle's Fwdop1/Fwdop2 (forwarding.ts's
    * computeForwarding over the same pipelineSlots), or null when nothing
@@ -220,6 +232,25 @@ const BUBBLE_LABEL_AT: Partial<Record<CycleStage, { x: number; y: number }>> = {
   R: { x: 795 + PIPELINE_OFFSET.WB, y: 410 },
 };
 
+/** The stage labels, left to right: each pipeline stage (as the machine
+ * names it) and the diagram's name for its region. */
+const STAGE_LABEL_ORDER: { stage: CycleStage; name: string }[] = [
+  { stage: "F", name: "IF" },
+  { stage: "D", name: "ID" },
+  { stage: "A", name: "EX" },
+  { stage: "M", name: "MEM" },
+  { stage: "R", name: "WB" },
+];
+
+/** Early branches: what a branch waiting in ID for a stall lights — only
+ * its register numbers into the Register File (rs -> RR1, rt -> RR2); the
+ * opcode -> Control wire lights separately (controlInColour). */
+const WAITING_BRANCH_KEYS = new Set(["RS_RR1", "RT_", "_RR2"]);
+
+/** Colour index meaning "this wire is in a stage holding a bubble (nop)":
+ * drawn brown (.dp-wire-bubble) instead of a pipeline colour. */
+const BUBBLE_COLOUR = -1;
+
 /** Hazards mode without early branches: the PC-update segments after EX/MEM
  * (see pieceColour). */
 const PC_UPDATE_KEYS = new Set(["_MUX4", "ADD2_MUX4", "MUX4_MUX5", "MUX5_PC", "MUX4_PC", "JADDR_LS", "LS_MUX5"]);
@@ -238,7 +269,7 @@ const REGION_OF_STEP: Record<string, Stage> = { F: "IF", D: "ID", A: "EX", M: "M
  * These are CSS var() references, not hex values: the actual colours are
  * defined per theme in theme.css (brighter in dark mode), so everything
  * that uses them — wires and arrowheads here, the editor's gutter dots,
- * the scrubber, the stage readout — switches theme without re-rendering.
+ * the scrubber, the stage labels — switches theme without re-rendering.
  * They're only ever used where CSS evaluates them (style props, CSS
  * rules, color-mix()), never parsed as colours in JS. */
 export const PIPELINE_WIRE_COLOURS = ["var(--pipe-0)", "var(--pipe-1)", "var(--pipe-2)", "var(--pipe-3)", "var(--pipe-4)"] as const;
@@ -400,7 +431,26 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   const hazards = pipeline && (features?.hazards ?? false);
   const early = hazards && (features?.earlyBranch ?? false);
   const fwd = hazards ? (forwarding ?? null) : null;
-  const brFwd = early ? (branchForwarding ?? null) : null;
+
+  // Early branches: a branch in ID waits while the hazard detection unit
+  // fires on where things are *now* (a producer in EX, or a load in MEM) —
+  // from the cycle it arrives until the cycle its operands are ready. In
+  // that last cycle it's still flagged `stalled` by the engine (it's
+  // redoing ID), but nothing blocks it: it compares (forwarding from
+  // EX/MEM or MEM/WB as needed) and resolves. While it waits its label says
+  // "(stall)", PC and IF/ID are drawn held, and it lights only the wires to
+  // Control and the Register File: it can't compare, compute its target or
+  // redirect the PC yet.
+  const slotIn = (stage: CycleStage) => pipelineSlots?.find((s) => s.stage === stage);
+  const idNow = early ? slotIn("D") : undefined;
+  const idIsBranch = !!idNow && isBranchOp(idNow.op);
+  const branchWaiting =
+    idIsBranch && stallReason(idNow.state, slotIn("A")?.state, slotIn("M")?.state, true) !== null;
+  /** Whether `s` is held this cycle. With a branch in ID (early branches),
+   * IF and ID are held exactly while it waits; otherwise as the engine says. */
+  const isHeld = (s: PipelineSlotView) => (idIsBranch ? branchWaiting && (s.stage === "D" || s.stage === "F") : s.stalled);
+  // ...so nothing is forwarded to its comparator yet either.
+  const brFwd = early && !branchWaiting ? (branchForwarding ?? null) : null;
 
   // Early-branch mode re-lays out the pipelined diagram for the early-branch
   // hardware (datapathBranch.ts): X/P remap x coordinates and paths, and
@@ -422,6 +472,50 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   // Top-row components (PC, Add1) — also moved down by PIPELINE_TOP_DY.
   const ifShift = (dx: number) => (pipeline ? `translate(${dx} ${PIPELINE_TOP_DY})` : undefined);
   const im = PIPELINE_IF.im;
+
+  // ---- Stage labels (pipeline mode) ----
+  // The SVG's rendered size, to place the HTML labels over the drawing:
+  // with preserveAspectRatio "meet" the drawing is scaled by the smaller of
+  // the two box/viewBox ratios and centred horizontally.
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [svgBox, setSvgBox] = useState({ w: 0, h: 0 });
+  useLayoutEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      setSvgBox((prev) => (prev.w === r.width && prev.h === r.height ? prev : { w: r.width, h: r.height }));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const scale = svgBox.w > 0 && svgBox.h > 0 ? Math.min(svgBox.w / viewWidth, svgBox.h / viewHeight) : 0;
+  const drawingLeft = (svgBox.w - viewWidth * scale) / 2;
+
+  // Each stage's region runs between the centres of the pipeline-register
+  // bars on either side of it (the diagram's left/right edges for IF/WB),
+  // in final coordinates, so the labels follow the early-branch re-layout.
+  const stageEdges = pipeline ? [0, ...PIPELINE_BARS.map((b) => X(b.x) + b.width / 2), viewWidth] : [];
+  const stageLabels = pipeline
+    ? STAGE_LABEL_ORDER.map(({ stage, name }, i) => {
+        const slot = pipelineSlots?.find((s) => s.stage === stage);
+        const bubble = bubbles?.includes(stage) ?? false;
+        const what = slot
+          ? `${slot.op}@${slot.pc}${isHeld(slot) ? " (stall)" : ""}${slot.flushed ? " (flush)" : ""}`
+          : bubble
+            ? "nop (bubble)"
+            : "-";
+        return {
+          name,
+          width: (stageEdges[i + 1] - stageEdges[i]) * scale,
+          text: `${name}: ${what}`,
+          colour: slot ? PIPELINE_WIRE_COLOURS[slot.seq % PIPELINE_WIRE_COLOURS.length] : null,
+          bubble: !slot && bubble,
+        };
+      })
+    : [];
 
   // Remap SHAMT_ALU2 -> MUX2_ALU2 before computing active segments, so
   // turning the "Shift" toggle off makes a shift micro-step light the
@@ -461,6 +555,10 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   // this cycle — the pieces of that instruction's wiring in the region,
   // in that instruction's colour.
   const regionLit = new Map<Stage, { keys: Set<string>; wires: WireId[]; colour: number }>();
+  // Stage regions holding a bubble (a nop) this cycle: every wire in them
+  // is drawn brown (BUBBLE_COLOUR), except the PC-update wiring, which a nop
+  // doesn't drive.
+  const bubbleRegions = new Set<Stage>(pipeline ? (bubbles ?? []).map((s) => REGION_OF_STEP[s]) : []);
   if (pipeline) {
     for (const slot of pipelineSlots ?? []) {
       const region = REGION_OF_STEP[slot.stage];
@@ -477,8 +575,10 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
           (w) => !(w === "RD1_ALU1" && fwdA !== 0) && !((w === "RD2_MUX2" || w === "RD2_MWD") && fwdB !== 0),
         );
       }
+      let keys = litKeys(lightWires);
+      if (branchWaiting && slot.stage === "D") keys = new Set([...keys].filter((k) => WAITING_BRANCH_KEYS.has(k)));
       regionLit.set(region, {
-        keys: litKeys(lightWires),
+        keys,
         wires: slot.wires,
         colour: slot.seq % PIPELINE_WIRE_COLOURS.length,
       });
@@ -496,15 +596,21 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
     // instruction in MEM.
     const stage = hazards && !early && piece.stage === "WB" && PC_UPDATE_KEYS.has(key) ? "MEM" : piece.stage;
     const lit = stage ? regionLit.get(stage) : undefined;
-    return lit && lit.keys.has(key) ? lit.colour : null;
+    if (lit) return lit.keys.has(key) ? lit.colour : null;
+    return stage && bubbleRegions.has(stage) && !PC_UPDATE_KEYS.has(key) ? BUBBLE_COLOUR : null;
   };
-  const wireProps = (colour: number | null, arrow: boolean) => ({
-    className: colour === null ? "dp-wire" : "dp-wire dp-wire-active",
-    style: pipeline && colour !== null ? { stroke: PIPELINE_WIRE_COLOURS[colour] } : undefined,
-    markerEnd: arrow
-      ? `url(#${colour === null ? "dp-arrow" : pipeline ? `dp-arrow-p${colour}` : "dp-arrow-active"})`
-      : undefined,
-  });
+  /** BUBBLE_COLOUR in a region holding a bubble, else `colour`. */
+  const orBubble = (region: Stage, colour: number | null) => (bubbleRegions.has(region) ? BUBBLE_COLOUR : colour);
+  const wireProps = (colour: number | null, arrow: boolean) =>
+    colour === BUBBLE_COLOUR
+      ? { className: "dp-wire dp-wire-bubble", style: undefined, markerEnd: arrow ? "url(#dp-arrow-bubble)" : undefined }
+      : {
+          className: colour === null ? "dp-wire" : "dp-wire dp-wire-active",
+          style: pipeline && colour !== null ? { stroke: PIPELINE_WIRE_COLOURS[colour] } : undefined,
+          markerEnd: arrow
+            ? `url(#${colour === null ? "dp-arrow" : pipeline ? `dp-arrow-p${colour}` : "dp-arrow-active"})`
+            : undefined,
+        };
 
   // Hazards mode colours. MUX 6's output carries the EX instruction's
   // ALUop1 whichever input is selected. Each dotted forwarding wire
@@ -529,6 +635,23 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
       style: on ? { stroke: PIPELINE_WIRE_COLOURS[colour] } : undefined,
       markerEnd: arrow ? `url(#${on ? `dp-arrow-p${colour}` : "dp-arrow-fwd"})` : undefined,
     };
+  };
+  /** A forwarding wire's trunk, split for lighting. EX/MEM's trunk rises
+   * from its tap to the lane above the ALU, runs left to the forwarding bus
+   * and drops down it to MUX 6/7; with early branches the forwarding to ID
+   * continues left from the top of that drop. So the drop (`drop: true`) is
+   * EX's alone, and stays dark when only the branch in ID is forwarded to —
+   * e.g. while EX holds a bubble. MEM/WB's trunk is EX's only (ID taps WD_
+   * separately), so it stays whole. */
+  const trunkParts = (sel: number, trunk: WireSegment): { d: string; drop: boolean }[] => {
+    const pts = trunk.pts;
+    if (sel !== FWD_EX_MEM || !pts || pts.length < 8) return [{ d: trunk.d, drop: false }];
+    const path = (q: number[]) => q.reduce((d, v, i) => (i % 2 === 0 ? `${d}${i === 0 ? "M" : " L"} ${v}` : `${d} ${v}`), "");
+    const n = pts.length;
+    return [
+      { d: path(pts.slice(0, n - 2)), drop: false },
+      { d: path(pts.slice(n - 4)), drop: true },
+    ];
   };
   const forwardPaths = [
     { key: "exmem", wire: FWD_EXMEM, colour: exMemColour, sel: FWD_EX_MEM, tap: FWD_EXMEM_TAP },
@@ -560,13 +683,13 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   const wbLit = regionLit.get("WB");
   // ...and the opcode -> Control wire lights with whichever instruction is
   // in Decode (every instruction's opcode goes through Control).
-  const controlInColour = regionLit.get("ID")?.colour ?? null;
-  const wbWrColour = wbLit && wbLit.wires.includes("MUX3_WD") ? wbLit.colour : null;
+  const controlInColour = orBubble("ID", regionLit.get("ID")?.colour ?? null);
+  const wbWrColour = orBubble("WB", wbLit && wbLit.wires.includes("MUX3_WD") ? wbLit.colour : null);
   const segmentsToRender = jump ? SEGMENTS : { ...SEGMENTS, ...LEGACY_SEGMENTS };
 
   // A load-use stall this cycle: PC and IF/ID aren't written (PCWrite =
   // IF/IDWrite = 0), so both are drawn as held.
-  const held = pipeline && (pipelineSlots ?? []).some((s) => s.stalled);
+  const held = pipeline && (pipelineSlots ?? []).some(isHeld);
 
   // The instruction-field column shows the instruction being decoded — in
   // pipeline mode, whichever one is in Decode this cycle.
@@ -586,13 +709,13 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   // were coloured above.
   const hazardWires: { key: string; seg: WireSegment; colour: number | null }[] = hazards
     ? [
-        { key: "alu1-in0", seg: HAZARD_ALU1_IN0, colour: pieceColour("_ALU1", HAZARD_ALU1_IN0) },
-        { key: "mux6-out", seg: HAZARD_MUX6_OUT, colour: mux6OutColour },
-        { key: "rd2-in0", seg: HAZARD_RD2_IN0, colour: pieceColour("_RD2", HAZARD_RD2_IN0) },
-        { key: "mux7-out", seg: HAZARD_MUX7_OUT, colour: mux7OutColour },
-        { key: "mux7-mux2", seg: HAZARD_MUX7_TO_MUX2, colour: mux7ToMux2Colour },
-        { key: "imm-mux2", seg: HAZARD_IMM_MUX2, colour: pieceColour("_1MUX2", HAZARD_IMM_MUX2) },
-        { key: "store-ex", seg: HAZARD_STORE_EX, colour: storeExColour },
+        { key: "alu1-in0", seg: HAZARD_ALU1_IN0, colour: orBubble("EX", pieceColour("_ALU1", HAZARD_ALU1_IN0)) },
+        { key: "mux6-out", seg: HAZARD_MUX6_OUT, colour: orBubble("EX", mux6OutColour) },
+        { key: "rd2-in0", seg: HAZARD_RD2_IN0, colour: orBubble("EX", pieceColour("_RD2", HAZARD_RD2_IN0)) },
+        { key: "mux7-out", seg: HAZARD_MUX7_OUT, colour: orBubble("EX", mux7OutColour) },
+        { key: "mux7-mux2", seg: HAZARD_MUX7_TO_MUX2, colour: orBubble("EX", mux7ToMux2Colour) },
+        { key: "imm-mux2", seg: HAZARD_IMM_MUX2, colour: orBubble("EX", pieceColour("_1MUX2", HAZARD_IMM_MUX2)) },
+        { key: "store-ex", seg: HAZARD_STORE_EX, colour: orBubble("EX", storeExColour) },
         { key: "store-mem", seg: HAZARD_STORE_MEM, colour: pieceColour("_MWD", HAZARD_STORE_MEM) },
       ]
     : [];
@@ -611,7 +734,9 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   const colourOf = (s: PipelineSlotView | null | undefined) => (s ? s.seq % PIPELINE_WIRE_COLOURS.length : null);
   const ifSlot = slotAt("F");
   const idSlot = slotAt("D");
-  const idBranch = idSlot && isBranchOp(idSlot.op) ? idSlot : undefined;
+  // A waiting branch doesn't drive its branch hardware (shifter, adder,
+  // FwdRD muxes, comparator) or MUX 4 yet.
+  const idBranch = idSlot && isBranchOp(idSlot.op) && !branchWaiting ? idSlot : undefined;
   const idJump = idSlot && isJumpOp(idSlot.op) ? idSlot : undefined;
   const branchTaken = !!idBranch && idBranch.wires.includes("ADD2_MUX4");
   // Where this cycle's new PC comes from: the jump or taken branch in ID,
@@ -627,7 +752,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
     ? [
         { key: "pc4-mux4", seg: BR_PC4_TO_MUX4, colour: pcSource === "seq" ? pcColour : null },
         { key: "pc4-latch-if", seg: BR_PC4_LATCH_IF, colour: colourOf(ifSlot) },
-        { key: "pc4-latch-id", seg: BR_PC4_LATCH_ID, colour: branchColour },
+        { key: "pc4-latch-id", seg: BR_PC4_LATCH_ID, colour: orBubble("ID", branchColour) },
         ...(jump
           ? [
               { key: "mux4-mux5", seg: BR_MUX4_TO_MUX5, colour: pcSource === "seq" || pcSource === "branch" ? pcColour : null },
@@ -636,14 +761,14 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
               { key: "ls-mux5", seg: BR_LS_TO_MUX5, colour: colourOf(idJump) },
             ]
           : [{ key: "mux4-pc", seg: BR_MUX4_TO_PC, colour: pcSource === "seq" || pcSource === "branch" ? pcColour : null }]),
-        { key: "imm-riser", seg: BR_IMM_RISER, colour: branchColour },
-        { key: "ls-add", seg: BR_LS_TO_ADD, colour: branchColour },
-        { key: "target", seg: BR_TARGET, colour: branchColour },
-        { key: "cmp-mux4", seg: BR_CMP_TO_MUX4, colour: branchColour },
-        { key: "rd1-fwd", seg: BR_RD1_TO_FWD, colour: fwdRd1 === FWD_NONE ? branchColour : null },
-        { key: "rd2-fwd", seg: BR_RD2_TO_FWD, colour: fwdRd2 === FWD_NONE ? branchColour : null },
-        { key: "fwd1-cmp", seg: BR_FWD1_TO_CMP, colour: branchColour },
-        { key: "fwd2-cmp", seg: BR_FWD2_TO_CMP, colour: branchColour },
+        { key: "imm-riser", seg: BR_IMM_RISER, colour: orBubble("ID", branchColour) },
+        { key: "ls-add", seg: BR_LS_TO_ADD, colour: orBubble("ID", branchColour) },
+        { key: "target", seg: BR_TARGET, colour: orBubble("ID", branchColour) },
+        { key: "cmp-mux4", seg: BR_CMP_TO_MUX4, colour: orBubble("ID", branchColour) },
+        { key: "rd1-fwd", seg: BR_RD1_TO_FWD, colour: orBubble("ID", fwdRd1 === FWD_NONE ? branchColour : null) },
+        { key: "rd2-fwd", seg: BR_RD2_TO_FWD, colour: orBubble("ID", fwdRd2 === FWD_NONE ? branchColour : null) },
+        { key: "fwd1-cmp", seg: BR_FWD1_TO_CMP, colour: orBubble("ID", branchColour) },
+        { key: "fwd2-cmp", seg: BR_FWD2_TO_CMP, colour: orBubble("ID", branchColour) },
       ]
     : [];
   // The dotted forwarding wires into FwdRD1/FwdRD2, in the producer's
@@ -658,7 +783,42 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   const exMemTrunkColour = exMemColour ?? colourOf(brFwd?.exMem);
 
   return (
-    <svg className="datapath-diagram" viewBox={`0 ${viewY} ${viewWidth} ${viewHeight}`} xmlns="http://www.w3.org/2000/svg">
+    <div className="datapath-diagram-wrap">
+      {/* ---- Stage labels (pipeline mode) ---- */}
+      {/* Which instruction is in each stage this cycle, in its wire colour,
+      each over its own stage (see the header comment). The labels tile the
+      drawing's width exactly, so the dashed borders between them fall on
+      the stage boundaries (the bars' centres). Hidden until the SVG has
+      been measured, so they never flash in the wrong place. */}
+      {pipeline && (
+        <div
+          className="dp-stage-row"
+          role="group"
+          aria-label="Instruction in each pipeline stage this cycle"
+          style={{ paddingLeft: Math.max(0, drawingLeft), visibility: scale > 0 ? "visible" : "hidden" }}
+        >
+          {stageLabels.map((l) => (
+            <div
+              key={l.name}
+              className={
+                l.colour ? "dp-stage-label dp-stage-label-active" : l.bubble ? "dp-stage-label dp-stage-label-bubble" : "dp-stage-label"
+              }
+              style={{ width: l.width, ...(l.colour ? { color: l.colour } : {}) }}
+            >
+              {l.text}
+            </div>
+          ))}
+        </div>
+      )}
+    <svg
+      ref={svgRef}
+      className="datapath-diagram"
+      viewBox={`0 ${viewY} ${viewWidth} ${viewHeight}`}
+      // Pipeline mode: top-aligned, so the drawing sits right under the
+      // stage labels instead of being centred with a gap above it.
+      preserveAspectRatio={pipeline ? "xMidYMin meet" : undefined}
+      xmlns="http://www.w3.org/2000/svg"
+    >
       <defs>
         <marker id="dp-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" className="dp-arrowhead" />
@@ -671,6 +831,9 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
         </marker>
         <marker id="dp-arrow-fwd" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" className="dp-arrowhead-fwd" />
+        </marker>
+        <marker id="dp-arrow-bubble" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" className="dp-arrowhead-bubble" />
         </marker>
         {PIPELINE_WIRE_COLOURS.map((colour, i) => (
           <marker key={colour} id={`dp-arrow-p${i}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
@@ -690,10 +853,15 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
             const toId = sel === FWD_EX_MEM && idUsesExMem;
             return (
               <g key={key}>
-                <path
-                  d={P(wire.trunk.d)}
-                  {...fwdWireProps(toId && !(toMux6 || toMux7) ? exMemTrunkColour : colour, toMux6 || toMux7 || toId, false)}
-                />
+                {trunkParts(sel, wire.trunk).map((part, i) => {
+                  // The drop down the bus into MUX 6/7 belongs to EX: it only
+                  // lights when EX forwards. The run from the tap along the
+                  // lane above the ALU also carries forwarding on to ID.
+                  const exOnly = part.drop;
+                  const lit = toMux6 || toMux7 || (!exOnly && toId);
+                  const c = !exOnly && toId && !(toMux6 || toMux7) ? exMemTrunkColour : colour;
+                  return <path key={i} d={P(part.d)} {...fwdWireProps(c, lit, false)} />;
+                })}
                 <path d={P(wire.toMux6.d)} {...fwdWireProps(colour, toMux6, true)} />
                 <path d={P(wire.toMux7.d)} {...fwdWireProps(colour, toMux7, true)} />
               </g>
@@ -1227,5 +1395,6 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
         </text>
       )}
     </svg>
+    </div>
   );
 }
