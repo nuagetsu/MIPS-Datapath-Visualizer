@@ -1049,6 +1049,7 @@ export function App() {
               forwarding={forwarding}
               branchForwarding={branchForwarding}
               bubbles={machine.pipelineBubbles}
+              textBase={programBase}
             />
           </div>
         </section>

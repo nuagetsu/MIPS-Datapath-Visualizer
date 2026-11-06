@@ -101,15 +101,25 @@
 
 /* ---- Bubbles (pipeline hazards mode) ----
  * Every wire in a stage holding a bubble (a nop inserted by a stall or left
- * by a flush) is drawn in a steady brown, so the empty stage reads at a glance. The
- * brown is a diagram token like the others, with a lighter shade for the
- * dark theme (kept here rather than in Theme.css since only the diagram
- * uses it). */
+ * by a flush) is drawn in light grey, so the empty stage reads at a glance
+ * as "not a real instruction" — colourless, unlike the five instruction
+ * colours. The bubble wires are also drawn thicker (2.5 vs 2) than plain
+ * ones.
+ *
+ * Light theme: a light grey against the black plain wires. It's faint on
+ * the white background (2:1) by nature, and closest to the unlit dashed
+ * forwarding wires' grey, which the dashes tell apart.
+ * Dark theme: plain unlit wires are already light grey (#b9bdc6), so the
+ * bubble grey is a near-white shade lighter than them, to keep a bubble
+ * stage from looking merely unlit.
+ *
+ * A diagram token like the others (kept here rather than in Theme.css
+ * since only the diagram and the Pipe. Reg table use it). */
 :root {
-  --dp-bubble-wire: #8b5a2b;
+  --dp-bubble-wire: #b4b8bf;
 }
 :root[data-theme="dark"] {
-  --dp-bubble-wire: #c8925a;
+  --dp-bubble-wire: #f5f6f8;
 }
 .dp-wire-bubble {
   stroke: var(--dp-bubble-wire);
@@ -207,7 +217,7 @@
 .dp-stage-label-active {
   opacity: 1;
 }
-/* A stage holding a bubble: "nop (bubble)", in the same brown as its
+/* A stage holding a bubble: "nop (bubble)", in the same grey as its
  * wires. */
 .dp-stage-label-bubble {
   color: var(--dp-bubble-wire);

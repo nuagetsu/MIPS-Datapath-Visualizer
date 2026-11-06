@@ -218,6 +218,10 @@ export interface DatapathDiagramProps {
   /** Hazards mode only: this cycle's FwdRD1/FwdRD2 for a branch in ID
    * (forwarding.ts's computeBranchForwarding), or null. */
   branchForwarding?: BranchForwardingSignals | null;
+  /** Byte address of the program's first instruction (the starting $pc),
+   * so the stage labels name each instruction by its address, as the
+   * Assembled listing does. Defaults to 0. */
+  textBase?: number;
 }
 
 /** Where to label a bubble, per stage, in pipelined coordinates: inside the
@@ -248,7 +252,7 @@ const STAGE_LABEL_ORDER: { stage: CycleStage; name: string }[] = [
 const WAITING_BRANCH_KEYS = new Set(["RS_RR1", "RT_", "_RR2"]);
 
 /** Colour index meaning "this wire is in a stage holding a bubble (nop)":
- * drawn brown (.dp-wire-bubble) instead of a pipeline colour. */
+ * drawn light grey (.dp-wire-bubble) instead of a pipeline colour. */
 const BUBBLE_COLOUR = -1;
 
 /** Hazards mode without early branches: the PC-update segments after EX/MEM
@@ -272,6 +276,14 @@ const REGION_OF_STEP: Record<string, Stage> = { F: "IF", D: "ID", A: "EX", M: "M
  * the scrubber, the stage labels — switches theme without re-rendering.
  * They're only ever used where CSS evaluates them (style props, CSS
  * rules, color-mix()), never parsed as colours in JS. */
+/** An instruction's address as the Assembled listing's gutter shows it:
+ * "0x" plus lowercase hex without leading zeros (0x0, 0x4, 0x1c, ...),
+ * counted from the starting $pc. `index` is its position in the program
+ * (a slot's `pc`). */
+export function instAddress(index: number, textBase = 0): string {
+  return "0x" + ((textBase + 4 * index) >>> 0).toString(16);
+}
+
 export const PIPELINE_WIRE_COLOURS = ["var(--pipe-0)", "var(--pipe-1)", "var(--pipe-2)", "var(--pipe-3)", "var(--pipe-4)"] as const;
 
 /** Label colours: ordinary text, component titles (red in the light
@@ -423,7 +435,7 @@ function ControlUnit({ hazards }: { hazards: boolean }) {
   );
 }
 
-export function DatapathDiagram({ activeWires, state, features, pipelineSlots, forwarding, bubbles, branchForwarding }: DatapathDiagramProps) {
+export function DatapathDiagram({ activeWires, state, features, pipelineSlots, forwarding, bubbles, branchForwarding, textBase = 0 }: DatapathDiagramProps) {
   const shift = features?.shift ?? true;
   const jump = features?.jump ?? true;
   const pipeline = features?.pipeline ?? false;
@@ -503,7 +515,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
         const slot = pipelineSlots?.find((s) => s.stage === stage);
         const bubble = bubbles?.includes(stage) ?? false;
         const what = slot
-          ? `${slot.op}@${slot.pc}${isHeld(slot) ? " (stall)" : ""}${slot.flushed ? " (flush)" : ""}`
+          ? `${slot.op}@${instAddress(slot.pc, textBase)}${isHeld(slot) ? " (stall)" : ""}${slot.flushed ? " (flush)" : ""}`
           : bubble
             ? "nop (bubble)"
             : "-";
@@ -556,7 +568,7 @@ export function DatapathDiagram({ activeWires, state, features, pipelineSlots, f
   // in that instruction's colour.
   const regionLit = new Map<Stage, { keys: Set<string>; wires: WireId[]; colour: number }>();
   // Stage regions holding a bubble (a nop) this cycle: every wire in them
-  // is drawn brown (BUBBLE_COLOUR), except the PC-update wiring, which a nop
+  // is drawn light grey (BUBBLE_COLOUR), except the PC-update wiring, which a nop
   // doesn't drive.
   const bubbleRegions = new Set<Stage>(pipeline ? (bubbles ?? []).map((s) => REGION_OF_STEP[s]) : []);
   if (pipeline) {
